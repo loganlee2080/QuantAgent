@@ -49,7 +49,9 @@ _default_ws = "wss://stream.binancefuture.com" if "demo-fapi" in BINANCE_FUTURES
 BINANCE_WS_BASE = os.getenv("BINANCE_WS_BASE", _default_ws)
 
 # --- Backend ---
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
+# Prefer generic hosting env var PORT (e.g. Railway, Render, Heroku) with BACKEND_PORT as an override.
+_port_env = os.getenv("PORT") or os.getenv("BACKEND_PORT") or "8000"
+BACKEND_PORT = int(_port_env)
 # If false/0/no/off, backend does not start any fetch loops (positions, market data, order history, funding, WS). Default true.
 _run_fetch_loops = os.getenv("RUN_FETCH_LOOPS", "true").strip().lower()
 RUN_FETCH_LOOPS = _run_fetch_loops not in ("false", "0", "no", "off")

@@ -3415,7 +3415,9 @@ def main() -> None:
             sys.stderr.write(f"[backend_server] Order status WebSocket not started (install websocket-client if needed): {e}\n")
     else:
         sys.stderr.write("[backend_server] RUN_FETCH_LOOPS=false: positions/market/order/funding fetch loops and order-status WebSocket are disabled.\n")
-    app.run(host="127.0.0.1", port=port, debug=True)
+    # Bind to 0.0.0.0 so platforms like Railway can reach the container.
+    # Debug mode can be controlled via FLASK_DEBUG or similar env; default to False for deploys.
+    app.run(host="0.0.0.0", port=port, debug=False)
 
 
 if __name__ == "__main__":
