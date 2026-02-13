@@ -144,7 +144,7 @@ def run_order_status_ws(*, silent: bool = False) -> None:
         if now - last_positions_refresh_ref[0] < POSITIONS_REFRESH_INTERVAL:
             return
         try:
-            script_path = ROOT / "scripts" / "crawl_binance_usdm_positions.py"
+            script_path = ROOT / "src" / "crawl_binance_usdm_positions.py"
             log.info("Refreshing positions via %s", script_path)
             proc = subprocess.run(
                 [sys.executable, str(script_path)],

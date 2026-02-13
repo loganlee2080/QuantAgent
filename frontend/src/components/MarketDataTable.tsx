@@ -22,6 +22,7 @@ import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { FundingHistoryDialog } from "./FundingHistoryDialog";
 import { OrderbookHistoryDialog } from "./OrderbookHistoryDialog";
 import { OrderPlaceDialog } from "./OrderPlaceDialog";
+import { useTradeIntent } from "../assistant-ui/TradeIntentContext";
 
 /** Format price using Binance price precision (from market_data.pricePrecision). */
 function formatPriceWithPrecision(value: string | undefined, precisionStr?: string): string {
@@ -132,6 +133,7 @@ function getSortNumPriceChgPct(r: MarketDataRow): number {
 }
 
 export const MarketDataTable: React.FC = () => {
+  const tradeIntent = useTradeIntent();
   const [rows, setRows] = useState<MarketDataRow[]>([]);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
@@ -361,7 +363,13 @@ export const MarketDataTable: React.FC = () => {
               size="small"
               variant="outlined"
               disabled={selectedCurrencies.size === 0}
-              onClick={() => setOrderPlaceDialogOpen(true)}
+              onClick={() => {
+                const list = Array.from(selectedCurrencies).filter(Boolean);
+                if (list.length && tradeIntent?.openChatWithTrade) {
+                  tradeIntent.openChatWithTrade(list);
+                }
+              }}
+              sx={{ display: "none" }}
             >
               Trade
             </Button>

@@ -32,18 +32,10 @@ def audit_contains_order_id(order_id: int) -> bool:
 
 
 def main() -> int:
-    # Use order_meta: BTC quantity_precision 3 => min qty 0.001; at ~100k need notional >= 100 USDT
     symbol = "BTCUSDT"
-    meta = bta.ORDER_META.get("BTC", {})
-    min_usdt = 50
-    try:
-        min_usdt = int(meta.get("min_size_usdt") or min_usdt)
-    except ValueError:
-        pass
-    qp_str = (meta.get("quantity_precision") or "").strip()
-    quantity_precision = int(qp_str) if qp_str else 3
+    quantity_precision = 3
     # With 3 decimals, min qty 0.001 BTC. Binance requires order notional >= 100; 0.001 at edge. Use 200 so qty=0.002.
-    notional = max(float(min_usdt), 200.0)
+    notional = 200.0
     print("1) Placing small market BUY order...")
     try:
         # Don't set leverage (use account default) to avoid -2028 insufficient margin / leverage checks

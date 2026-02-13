@@ -82,7 +82,6 @@ POSITIONS_PATH = DATA_BINANCE / "positions.csv"
 SUMMARY_PATH = DATA_BINANCE / "summary.csv"
 UI_ORDERS_PATH = DATA_BINANCE / "orders" / "ui_orders.csv"
 ORDER_CLOSE_TEMPLATE_PATH = DATA_BINANCE / "orders" / "order_close_template.csv"
-ORDER_META_PATH = DATA_BINANCE / "orders" / "order_meta.csv"  # Global order config (order_meta) used when placing orders
 ORDER_TEMPLATE_PATH = DATA_BINANCE / "orders" / "order_template.csv"
 AI_SUGGESTIONS_PATH = DATA_BINANCE / "orders" / "ai_suggestions.jsonl"
 ORDER_HISTORY_PATH = DATA_BINANCE / "orders" / "order_history.csv"
@@ -128,7 +127,7 @@ def _positions_crawler_loop() -> None:
     Background loop that runs crawl_binance_usdm_positions.py every N seconds.
     Uses the same Python interpreter as this backend.
     """
-    script_path = ROOT / "scripts" / "crawl_binance_usdm_positions.py"
+    script_path = ROOT / "src" / "crawl_binance_usdm_positions.py"
     while not _positions_crawler_stop.is_set():
         try:
             sys.stderr.write("[backend_server] Running crawl_binance_usdm_positions.py\n")
@@ -1033,13 +1032,6 @@ def create_app() -> Flask:
             rows = rows[-limit:]
         return rows
 
-    def _read_order_meta() -> List[dict]:
-        if not ORDER_META_PATH.exists():
-            return []
-        with open(ORDER_META_PATH, newline="") as f:
-            reader = csv.DictReader(f)
-            return list(reader)
-
     def _read_market_data() -> List[dict]:
         """Return market_data.csv rows (all Binance USD-M perpetuals). No labels; merge from backup file in API."""
         if not MARKET_DATA_PATH.exists():
@@ -1063,6 +1055,67 @@ def create_app() -> Flask:
             if str(row.get("currency") or "").strip().upper() == symbol:
                 return row
         return None
+
+    def _get_funding_rate_for_symbol(currency: str, limit: int = 10) -> dict:
+        """
+        Look up recent funding rate data for a currency.
+
+        Accepts base (e.g. BTC) or full symbol (e.g. BTCUSDT).
+        Returns dict with latest rate, 72h avg, and recent history.
+        """
+        cur = (currency or "").strip().upper()
+        if not cur:
+            return {"error": "Missing currency"}
+        symbol = cur if cur.endswith("USDT") else cur + "USDT"
+        base = symbol.replace("USDT", "")
+
+        # 1) Latest rate + 72h average from market_data.csv
+        md_row = _get_market_data_for_currency(base)
+        latest_rate = None
+        latest_day_rate = None
+        avg_day_rate_72h = None
+        mark_price = None
+        if md_row:
+            latest_rate = md_row.get("lastFundingRate") or None
+            latest_day_rate = md_row.get("todayFundRate") or None
+            avg_day_rate_72h = md_row.get("avgDayFundRate72h") or None
+            mark_price = md_row.get("markPrice") or None
+
+        # 2) Recent history from CSV
+        rates = _load_local_funding_rates(symbol, max_rows=limit)
+        csv_path = DATA_BINANCE / "funding" / f"funding_rate_history_{symbol}.csv"
+        history_rows: list[dict] = []
+        if csv_path.exists():
+            try:
+                with open(csv_path, newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    all_rows = list(reader)
+                # Sort newest first
+                def _ft(r: dict) -> int:
+                    try:
+                        return int(r.get("fundingTime") or 0)
+                    except (TypeError, ValueError):
+                        return 0
+                all_rows.sort(key=_ft, reverse=True)
+                for r in all_rows[:limit]:
+                    ft_ms = _ft(r)
+                    history_rows.append({
+                        "fundingRate": r.get("fundingRate", ""),
+                        "fundingTime": r.get("fundingTime", ""),
+                        "fundingTimeISO": datetime.utcfromtimestamp(ft_ms / 1000).isoformat() + "Z" if ft_ms else "",
+                        "markPrice": r.get("markPrice", ""),
+                    })
+            except Exception:
+                pass
+
+        return {
+            "symbol": symbol,
+            "latestFundingRate": latest_rate,
+            "latestDayRate": latest_day_rate,
+            "avgDayRate72h": avg_day_rate_72h,
+            "markPrice": mark_price,
+            "history": history_rows,
+        }
 
     def _read_market_data_labels() -> dict:
         """Return currency_upper -> labels from data/binance/backup/market_data_labeled.csv."""
@@ -1172,6 +1225,129 @@ def create_app() -> Flask:
             return None
         return base
 
+    # ── Claude tool definitions (Anthropic tool-calling) ──────────────────
+    CLAUDE_TOOLS = [
+        {
+            "name": "get_funding_rate",
+            "description": (
+                "Get the latest funding rate and recent funding rate history for a "
+                "Binance USD-M perpetual symbol. Returns the latest 8-hour funding rate, "
+                "implied daily rate, 72-hour average daily rate, current mark price, "
+                "and recent funding rate history entries."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "currency": {
+                        "type": "string",
+                        "description": "Base currency (e.g. BTC, ETH) or full symbol (e.g. BTCUSDT).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of recent funding rate entries to return (default 10, max 50).",
+                    },
+                },
+                "required": ["currency"],
+            },
+        },
+        {
+            "name": "get_market_data",
+            "description": (
+                "Get market data for a Binance USD-M perpetual symbol including "
+                "mark price, max leverage, price precision, 24h volume, and last funding rate."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "currency": {
+                        "type": "string",
+                        "description": "Base currency (e.g. BTC, ETH) or full symbol (e.g. BTCUSDT).",
+                    },
+                },
+                "required": ["currency"],
+            },
+        },
+    ]
+
+    def _execute_tool(tool_name: str, tool_input: dict) -> str:
+        """Dispatch a Claude tool_use call to the matching backend function.
+
+        Returns a JSON string with the tool result (always serializable).
+        """
+        if tool_name == "get_funding_rate":
+            currency = tool_input.get("currency", "")
+            limit = min(int(tool_input.get("limit", 10)), 50)
+            result = _get_funding_rate_for_symbol(currency, limit=limit)
+            return json.dumps(result, default=str)
+
+        if tool_name == "get_market_data":
+            currency = tool_input.get("currency", "")
+            row = _get_market_data_for_currency(currency)
+            if row:
+                return json.dumps({"market_data": row}, default=str)
+            return json.dumps({"error": f"No market data found for {currency!r}"})
+
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+    def _call_claude_with_tools(
+        client,
+        model: str,
+        system: str,
+        messages: list,
+        max_tokens: int = 1500,
+        temperature: float = 0.2,
+        max_tool_rounds: int = 5,
+    ) -> str:
+        """Call Claude with tools, handling tool_use / tool_result loop.
+
+        Returns the final text reply (concatenated text blocks).
+        """
+        msgs = list(messages)  # shallow copy so we can append
+        for _ in range(max_tool_rounds):
+            resp = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system,
+                messages=msgs,
+                tools=CLAUDE_TOOLS,
+            )
+            # If stop_reason is not tool_use, we're done
+            if resp.stop_reason != "tool_use":
+                text_parts = []
+                for block in resp.content:
+                    if getattr(block, "type", None) == "text":
+                        text_parts.append(block.text)
+                return "\n".join(text_parts) if text_parts else "(no reply)"
+
+            # Collect all tool_use blocks and execute them
+            assistant_content = resp.content  # list of text + tool_use blocks
+            tool_results = []
+            for block in assistant_content:
+                if getattr(block, "type", None) == "tool_use":
+                    tool_name = block.name
+                    tool_input = block.input
+                    tool_id = block.id
+                    sys.stderr.write(
+                        f"[backend_server] Tool call: {tool_name}({json.dumps(tool_input)})\n"
+                    )
+                    result_str = _execute_tool(tool_name, tool_input)
+                    sys.stderr.write(
+                        f"[backend_server] Tool result ({tool_name}): {result_str[:200]}...\n"
+                    )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": result_str,
+                    })
+
+            # Append assistant message and tool results, then loop
+            msgs.append({"role": "assistant", "content": assistant_content})
+            msgs.append({"role": "user", "content": tool_results})
+
+        # Exhausted rounds — return whatever we have
+        return "(tool call limit reached)"
+
     def _build_claude_client() -> Anthropic | None:  # type: ignore[name-defined]
         api_key = ANTHROPIC_API_KEY
         sys.stderr.write(f"[backend_server] Using Anthropic key: {api_key[:6]}...{api_key[-4:]}\n")
@@ -1255,7 +1431,7 @@ def create_app() -> Flask:
         return "\n".join(lines)
 
     def _build_claude_prompt(user_message: str, mode: str = "chat") -> str:
-        """Assemble context (positions, summary, meta) into a single text prompt.
+        """Assemble context (positions, summary) into a single text prompt.
 
         mode:
           - "chat" / "analyse": general discussion
@@ -1263,7 +1439,6 @@ def create_app() -> Flask:
         """
         positions = _read_positions()
         summary = _read_summary_last_row()
-        meta = _read_order_meta()
 
         lines: list[str] = []
         lines.append("You are an AI trading assistant for a Binance USD-M vault.")
@@ -1292,13 +1467,7 @@ def create_app() -> Flask:
                 f"- {coin} {direct} size={szi}, lev={lev}, entry={entry}, mark={mark}, uPnL={upnl}, ROE={roe}"
             )
         lines.append("")
-        lines.append("Order meta/config (per currency):")
-        for row in meta:
-            lines.append(
-                f"- {row.get('currency')}: max_size_usdt={row.get('max_size_usdt')}, "
-                f"min_size_usdt={row.get('min_size_usdt')}, default_lever={row.get('default_lever')}, "
-                f"enabled_trade={row.get('enabled_trade')}, notes={row.get('notes')}"
-            )
+        lines.append("Order defaults: leverage=2, order_type=MARKET, max_size_usdt=100000, min_size_usdt=0")
         lines.append("")
         lines.append("User message:")
         lines.append(user_message)
@@ -1503,20 +1672,33 @@ def create_app() -> Flask:
         stdout: str,
         stderr: str,
         error_title: str | None = None,
+        results: list | None = None,
     ) -> str:
-        """Format execution result: small markdown table + compact detail for sidebar."""
+        """Format execution result: markdown with emoji summary and optional refresh prompt."""
         if success:
-            table = (
-                "| Status | Orders |\n"
-                "|--------|--------|\n"
-                f"| OK | {num_orders} |"
-            )
-            out_stdout = (stdout or "").strip()
-            if out_stdout:
-                # Keep output compact: one line or few lines
-                lines = out_stdout.splitlines()
-                table += "\n\n" + ("\n".join(lines[:5]) if len(lines) > 5 else out_stdout)
-            return table
+            lines_out: list[str] = []
+            if results:
+                lines_out.append(f"✅ **Orders placed** ({len(results)})\n")
+                lines_out.append("| Symbol | Side | Order ID | Qty | Status |")
+                lines_out.append("|--------|------|----------|-----|--------|")
+                for r in results:
+                    if not r.get("ok") or not r.get("response"):
+                        continue
+                    resp = r["response"]
+                    symbol = resp.get("symbol", r.get("currency", ""))
+                    side = resp.get("side", "")
+                    order_id = resp.get("orderId", "")
+                    qty = resp.get("origQty", "")
+                    status = resp.get("status", "")
+                    lines_out.append(f"| {symbol} | {side} | `{order_id}` | {qty} | {status} |")
+                lines_out.append("")
+            else:
+                lines_out.append("| Status | Orders |")
+                lines_out.append("|--------|--------|")
+                lines_out.append(f"| OK | {num_orders} |")
+                lines_out.append("")
+            lines_out.append("🔄 **Refresh** to see your updated positions.")
+            return "\n".join(lines_out)
         title = error_title or "Execution failed"
         table = (
             "| Status | Detail |\n"
@@ -1530,11 +1712,25 @@ def create_app() -> Flask:
 
     def _is_apply_last_suggestion_command(msg: str) -> bool:
         m = msg.strip().lower()
+        # Short confirmations like "yes" should act as
+        # "apply last suggestion" when there is a previous
+        # AI orders block, but still require an explicit
+        # Execute step before placing real trades.
         return m in {
             "apply last suggestion",
             "apply last",
             "execute last suggestion",
             "execute last",
+            "yes",
+            "y",
+            "ok",
+            "okay",
+            "sure",
+            "confirm",
+            "go ahead",
+            "do it",
+            "looks good",
+            "sounds good",
         }
 
     def _infer_chat_mode(message: str) -> str:
@@ -1647,7 +1843,7 @@ def create_app() -> Flask:
         Trigger a single run of crawl_binance_usdm_positions.py (synchronous).
         Used by the frontend Refresh button to pull latest Binance positions.
         """
-        script_path = ROOT / "scripts" / "crawl_binance_usdm_positions.py"
+        script_path = ROOT / "src" / "crawl_binance_usdm_positions.py"
         try:
             proc = subprocess.run(
                 [sys.executable, str(script_path)],
@@ -1751,28 +1947,8 @@ def create_app() -> Flask:
 
     @app.get("/api/order-meta")
     def get_order_meta() -> tuple[dict, int]:
-        """Return Binance order meta / config rows."""
-        rows = _read_order_meta()
-        return {"meta": rows}, 200
-
-    @app.get("/api/tools/order-meta")
-    def get_order_meta_tool() -> tuple[dict, int]:
-        """
-        Tool: get one order_meta row by currency/pair name.
-
-        Query params:
-          - currency: base (e.g. TAO) or full symbol (e.g. TAOUSDT)
-        """
-        cur_raw = (request.args.get("currency") or "").strip().upper()
-        if not cur_raw:
-            return {"error": "Missing 'currency' query parameter"}, 400
-        base = cur_raw.replace("USDT", "")
-        if not base:
-            return {"error": "Invalid currency"}, 400
-        for row in _read_order_meta():
-            if (row.get("currency") or "").strip().upper() == base:
-                return {"meta": row}, 200
-        return {"error": f"No order_meta row found for {base!r}"}, 404
+        """Return hardcoded order defaults (order_meta.csv removed)."""
+        return {"defaults": {"leverage": 2, "order_type": "MARKET", "max_size_usdt": 100000, "min_size_usdt": 0}}, 200
 
     @app.get("/api/tools/market-data")
     def get_market_data_for_symbol() -> tuple[dict, int]:
@@ -1789,6 +1965,25 @@ def create_app() -> Flask:
         if not row:
             return {"error": f"No market data found for {cur!r}"}, 404
         return {"market_data": row}, 200
+
+    @app.get("/api/tools/funding-rate")
+    def get_funding_rate_tool() -> tuple[dict, int]:
+        """
+        Tool: return latest funding rate and recent history for a currency.
+
+        Query params:
+          - currency: base (e.g. BTC) or full symbol (e.g. BTCUSDT)
+          - limit: optional max history entries (default 10, max 50)
+        """
+        cur = (request.args.get("currency") or "").strip()
+        if not cur:
+            return {"error": "Missing 'currency' query parameter"}, 400
+        try:
+            limit = min(int(request.args.get("limit", "10")), 50)
+        except ValueError:
+            limit = 10
+        result = _get_funding_rate_for_symbol(cur, limit=limit)
+        return result, 200
 
     @app.get("/api/market-data")
     def get_market_data() -> tuple[dict, int]:
@@ -2059,10 +2254,8 @@ def create_app() -> Flask:
                         return symbols
             except Exception:
                 pass
-        # No open positions: fallback to first few from order_meta to avoid 48 parallel requests
-        meta = _read_order_meta()
-        symbols = [f"{row.get('currency', '').strip().upper()}USDT" for row in meta if row.get("currency")]
-        return symbols[:8] if symbols else ["BTCUSDT", "ETHUSDT"]
+        # No open positions: fallback to common symbols
+        return ["BTCUSDT", "ETHUSDT"]
 
     def _fetch_binance_order_history() -> tuple[List[dict], Optional[str]]:
         """Fetch order history from Binance USD-M. Only symbols with open position (or up to 8 fallback); sequential with delay to avoid 418."""
@@ -2074,7 +2267,7 @@ def create_app() -> Flask:
             return [], "Backend missing 'requests' package for Binance API."
         symbols = _order_history_symbols()
         if not symbols:
-            return [], "No symbols to query (no open positions and no order_meta)."
+            return [], "No symbols to query (no open positions)."
         rows: List[dict] = []
         # Sequential requests with delay to stay under Binance rate limit (418)
         for sym in symbols:
@@ -2343,225 +2536,17 @@ def create_app() -> Flask:
             "csv_path": str(UI_ORDERS_PATH.relative_to(ROOT)),
         }, 200
 
-    @app.get("/api/tools/order-meta/defaults")
-    def get_order_meta_defaults_tool() -> tuple[dict, int]:
-        """
-        Tool: propose default order_meta values for a new currency (no write).
-
-        Query params:
-          - currency: base (e.g. TAO) or full symbol (e.g. TAOUSDT)
-        """
-        cur_raw = (request.args.get("currency") or "").strip().upper()
-        if not cur_raw:
-            return {"error": "Missing 'currency' query parameter"}, 400
-        base = cur_raw.replace("USDT", "")
-        if not base:
-            return {"error": "Invalid currency"}, 400
-
-        # Do not propose if row already exists
-        for row in _read_order_meta():
-            if (row.get("currency") or "").strip().upper() == base:
-                return {
-                    "error": f"order_meta already has entry for {base}",
-                    "meta": row,
-                }, 400
-
-        md_row = _get_market_data_for_currency(base) or _get_market_data_for_currency(base + "USDT")
-        max_leverage_val: int | None = None
-        if md_row is not None:
-            try:
-                max_leverage_val = int(float(str(md_row.get("maxLeverage") or "0")))
-            except ValueError:
-                max_leverage_val = None
-        if max_leverage_val is None or max_leverage_val <= 0:
-            max_leverage_val = 10
-
-        proposed = {
-            "currency": base,
-            "enabled_trade": True,
-            "default_lever": min(max_leverage_val, 10),
-            "max_size_usdt": 1000.0,
-            "min_size_usdt": 0.0,
-        }
-        return {"proposed": proposed}, 200
-
-    @app.post("/api/tools/add-order-pair")
-    def add_order_pair_tool() -> tuple[dict, int]:
-        """
-        Helper tool: initialize a new entry in order_meta.csv for a currency.
-
-        Body:
-          {
-            "currency": "TAO",          # base or full symbol
-            "enabled_trade": true,      # optional, default true
-            "default_lever": 5,         # optional, default from market data maxLeverage capped at 10
-            "max_size_usdt": 1000,      # optional, default 1000
-            "min_size_usdt": 0,         # optional, default 0
-            "order_type": "MARKET",     # optional, default MARKET
-            "quantity_precision": 0,    # optional, default 0
-            "notes": "auto-added",      # optional
-          }
-        """
-        data = request.get_json(silent=True) or {}
-        currency_raw = (data.get("currency") or "").strip().upper()
-        if not currency_raw:
-            return {"error": "Missing 'currency' in JSON body"}, 400
-        base = currency_raw.replace("USDT", "")
-        if not base:
-            return {"error": "Invalid currency"}, 400
-
-        # Prevent duplicates
-        existing = _read_order_meta()
-        for row in existing:
-            if (row.get("currency") or "").strip().upper() == base:
-                return {"error": f"order_meta already has entry for {base}"}, 400
-
-        # Derive sensible defaults from market_data when possible
-        md_row = _get_market_data_for_currency(base) or _get_market_data_for_currency(base + "USDT")
-        max_leverage_val: int | None = None
-        if md_row is not None:
-            try:
-                max_leverage_val = int(float(str(md_row.get("maxLeverage") or "0")))
-            except ValueError:
-                max_leverage_val = None
-        if max_leverage_val is None or max_leverage_val <= 0:
-            max_leverage_val = 10
-
-        enabled_trade = bool(data.get("enabled_trade", True))
-        default_lever = int(data.get("default_lever") or min(max_leverage_val, 10))
-        max_size_usdt = float(data.get("max_size_usdt") or 1000.0)
-        min_size_usdt = float(data.get("min_size_usdt") or 0.0)
-        order_type = str(data.get("order_type") or "MARKET").strip().upper() or "MARKET"
-        quantity_precision = int(data.get("quantity_precision") or 0)
-        notes = str(data.get("notes") or "auto-added from add-order-pair tool")
-
-        # Append to order_meta.csv
-        ORDER_META_PATH.parent.mkdir(parents=True, exist_ok=True)
-        file_exists = ORDER_META_PATH.exists()
-        fieldnames = [
-            "currency",
-            "quantity_precision",
-            "max_size_usdt",
-            "min_size_usdt",
-            "order_type",
-            "enabled_trade",
-            "default_lever",
-            "notes",
-            "max_leverage",
-            "max_position_at_max_leverage_usdt",
-        ]
-        new_row = {
-            "currency": base,
-            "quantity_precision": str(quantity_precision),
-            "max_size_usdt": f"{max_size_usdt:.2f}",
-            "min_size_usdt": f"{min_size_usdt:.2f}",
-            "order_type": order_type,
-            "enabled_trade": "true" if enabled_trade else "false",
-            "default_lever": str(default_lever),
-            "notes": notes,
-            "max_leverage": str(max_leverage_val),
-            # Conservative default for max position; can be edited later.
-            "max_position_at_max_leverage_usdt": f"{max_size_usdt * 5:.2f}",
-        }
-        try:
-            with open(ORDER_META_PATH, "a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(new_row)
-        except Exception as e:
-            sys.stderr.write(f"[backend_server] add-order-pair tool failed: {e}\n")
-            traceback.print_exc()
-            return {"error": f"Failed to append order_meta: {e}"}, 500
-
-        return {"status": "ok", "meta_row": new_row}, 200
-
     def _maybe_handle_chat_tools(message: str) -> Optional[tuple[dict, int]]:
         """
         Handle simple tool-style commands in chat before calling Claude.
 
         Supported intents (heuristic, keyword-based):
-          - Add order pair: contains 'add' and one of:
-            'order pair', 'currency pair', 'currencypair', 'trade pair', 'ticker'
-          - Get order_meta: 'order meta' and 'get'/'show'
           - Get market data: 'market data' and 'get'/'show'
-          - Propose order_meta defaults: 'order meta' and 'default'
         """
         m = (message or "").strip()
         lower = m.lower()
         if not m:
             return None
-
-        # Add order pair
-        add_keywords = ("order pair", "currency pair", "currencypair", "trade pair", "ticker")
-        if "add" in lower and any(kw in lower for kw in add_keywords):
-            base = _extract_base_currency_from_message(m)
-            if not base:
-                return {"reply": "Could not detect which currency to add order pair for."}, 200
-            # If already exists, just report
-            for row in _read_order_meta():
-                if (row.get("currency") or "").strip().upper() == base:
-                    return {
-                        "reply": f"Order pair for {base} already exists in order_meta.",
-                    }, 200
-            # Use defaults tool logic
-            defaults_body, status = get_order_meta_defaults_tool()
-            if status != 200 or "proposed" not in defaults_body:
-                # Fallback: propose hard-coded defaults
-                proposed = {
-                    "currency": base,
-                    "enabled_trade": True,
-                    "default_lever": 10,
-                    "max_size_usdt": 1000.0,
-                    "min_size_usdt": 0.0,
-                }
-            else:
-                proposed = defaults_body["proposed"]
-            # Immediately add with proposed values
-            data = {
-                "currency": proposed["currency"],
-                "enabled_trade": proposed.get("enabled_trade", True),
-                "default_lever": proposed.get("default_lever", 10),
-                "max_size_usdt": proposed.get("max_size_usdt", 1000.0),
-                "min_size_usdt": proposed.get("min_size_usdt", 0.0),
-            }
-            # Simulate JSON body for the tool
-            with app.test_request_context(
-                "/api/tools/add-order-pair",
-                method="POST",
-                json=data,
-            ):
-                body, st = add_order_pair_tool()
-            if st != 200:
-                return {"reply": f"Failed to add order pair for {base}: {body.get('error', 'unknown error')}"}, 200
-            meta_row = body.get("meta_row", {})
-            reply_lines = [
-                f"Added order pair for {base} with config:",
-                f"- enabled_trade: {meta_row.get('enabled_trade')}",
-                f"- default_lever: {meta_row.get('default_lever')}",
-                f"- max_size_usdt: {meta_row.get('max_size_usdt')}",
-                f"- min_size_usdt: {meta_row.get('min_size_usdt')}",
-            ]
-            return {"reply": "\n".join(reply_lines)}, 200
-
-        # Get order_meta by currency
-        if "order meta" in lower and any(kw in lower for kw in ("get", "show")):
-            base = _extract_base_currency_from_message(m)
-            if not base:
-                return {"reply": "Could not detect which currency to look up in order_meta."}, 200
-            for row in _read_order_meta():
-                if (row.get("currency") or "").strip().upper() == base:
-                    reply = (
-                        f"order_meta for {base}:\n"
-                        f"- enabled_trade: {row.get('enabled_trade')}\n"
-                        f"- default_lever: {row.get('default_lever')}\n"
-                        f"- max_size_usdt: {row.get('max_size_usdt')}\n"
-                        f"- min_size_usdt: {row.get('min_size_usdt')}\n"
-                        f"- order_type: {row.get('order_type')}\n"
-                        f"- notes: {row.get('notes') or ''}"
-                    )
-                    return {"reply": reply}, 200
-            return {"reply": f"No order_meta row found for {base}."}, 200
 
         # Get market data for a symbol
         if "market data" in lower and any(kw in lower for kw in ("get", "show")):
@@ -2578,30 +2563,6 @@ def create_app() -> Flask:
                 f"- pricePrecision: {row.get('pricePrecision')}\n"
                 f"- lastFundingRate: {row.get('lastFundingRate')}\n"
                 f"- volume24h(USDT): {row.get('volume24h(USDT)')}"
-            )
-            return {"reply": reply}, 200
-
-        # Propose order_meta defaults without writing
-        if "order meta" in lower and "default" in lower:
-            base = _extract_base_currency_from_message(m)
-            if not base:
-                return {"reply": "Could not detect which currency to propose defaults for."}, 200
-            with app.test_request_context(
-                "/api/tools/order-meta/defaults",
-                method="GET",
-                query_string={"currency": base},
-            ):
-                body, st = get_order_meta_defaults_tool()
-            if st != 200 or "proposed" not in body:
-                return {"reply": f"Could not compute default order_meta for {base}: {body.get('error', 'unknown error')}"}, 200
-            proposed = body["proposed"]
-            reply = (
-                f"Proposed order_meta defaults for {base} (not yet saved):\n"
-                f"- enabled_trade: {proposed.get('enabled_trade')}\n"
-                f"- default_lever: {proposed.get('default_lever')}\n"
-                f"- max_size_usdt: {proposed.get('max_size_usdt')}\n"
-                f"- min_size_usdt: {proposed.get('min_size_usdt')}\n"
-                "Reply with 'add order pair {base}' to create this entry."
             )
             return {"reply": reply}, 200
 
@@ -2845,10 +2806,9 @@ def create_app() -> Flask:
             claude_config.get("model") or ANTHROPIC_MODEL
         )
         try:
-            resp = client.messages.create(
+            reply_text = _call_claude_with_tools(
+                client,
                 model=model,
-                max_tokens=4000,
-                temperature=0.1,
                 system="You are an AI assistant helping manage a Binance USD-M vault.",
                 messages=[
                     {
@@ -2856,16 +2816,9 @@ def create_app() -> Flask:
                         "content": [{"type": "text", "text": prompt}],
                     }
                 ],
+                max_tokens=4000,
+                temperature=0.1,
             )
-            try:
-                sys.stderr.write(f"[backend_server] /api/compose-orders raw Claude resp: {resp}\n")
-            except Exception:
-                pass
-            text_parts: list[str] = []
-            for block in resp.content:
-                if getattr(block, "type", None) == "text":
-                    text_parts.append(block.text)
-            reply_text = "\n".join(text_parts) if text_parts else "(no reply)"
 
             print(f"model reply_text: {reply_text}")
 
@@ -2976,7 +2929,7 @@ def create_app() -> Flask:
         if not message:
             return {"error": "message is required"}, 400
 
-        # 0) Tool-style commands before Claude (order_meta / market_data helpers)
+        # 0) Tool-style commands before Claude (market_data helpers)
         tool_result = _maybe_handle_chat_tools(message)
         if tool_result is not None:
             return tool_result
@@ -3005,13 +2958,33 @@ def create_app() -> Flask:
         if mode in {"execute"}:
             # Treat message as CSV content with header currency,size_usdt,direct,lever (context-based; no file dependency).
             lines = [ln for ln in message.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+            csv_content = message
+            if not lines:
+                csv_content = None
+            else:
+                reader = csv.DictReader(lines)
+                required_fields = {"currency", "size_usdt", "direct"}
+                if not required_fields.issubset(set(reader.fieldnames or [])):
+                    csv_content = None
+            # If message is not valid CSV (e.g. assistant replied with a question), use last suggestion's orders
+            if not csv_content or not lines:
+                last = _read_last_ai_suggestion()
+                orders_block = (last or {}).get("orders_csv") or ""
+                if orders_block:
+                    lines = [
+                        ln
+                        for ln in orders_block.splitlines()
+                        if ln.strip() and not ln.lstrip().startswith("#")
+                    ]
+                    csv_content = orders_block
             if not lines:
                 return {"reply": "Execute failed: no CSV content provided."}, 200
             reader = csv.DictReader(lines)
             required_fields = {"currency", "size_usdt", "direct"}
             if not required_fields.issubset(set(reader.fieldnames or [])):
                 return {
-                    "reply": "Execute failed: CSV must include header currency, size_usdt, direct (lever optional)."
+                    "reply": "Execute failed: CSV must include header currency, size_usdt, direct (lever optional). "
+                    "Ask for a concrete order suggestion first, then click Execute orders."
                 }, 200
             rows_out: list[dict] = []
             for row in reader:
@@ -3048,21 +3021,15 @@ def create_app() -> Flask:
                     writer.writerow({k: row.get(k, "") for k in ORDERS_FIELDNAMES})
             _write_orders_audit_file(resolved_out, ORDERS_FIELDNAMES)
 
-            script_path = ROOT / "scripts" / "binance_trade_api.py"
-            cmd = [sys.executable, str(script_path), str(UI_ORDERS_PATH)]
-            # Preserve the raw CSV input for history.
             input_csv_text = "\n".join(lines)
 
             try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(ROOT),
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
+                sys.path.insert(0, str(ROOT))
+                import binance_trade_api as bta  # type: ignore[import]
+
+                out = bta.place_orders_from_rows(resolved_out)
             except Exception as e:
-                sys.stderr.write("[backend_server] Failed to run binance_trade_api.py:\n")
+                sys.stderr.write("[backend_server] Order execution failed:\n")
                 traceback.print_exc()
                 _append_order_history_entry(
                     source="chat_execute",
@@ -3078,36 +3045,37 @@ def create_app() -> Flask:
                     returncode=-1,
                     stdout="",
                     stderr=str(e),
-                    error_title="Failed to run binance_trade_api.py",
+                    error_title="Order execution failed",
                 )
                 return {"reply": reply, "executed": True, "success": False, "num_orders": len(rows_out)}, 200
 
             _append_order_history_entry(
                 source="chat_execute",
                 num_orders=len(rows_out),
-                returncode=proc.returncode,
-                stdout=proc.stdout or "",
-                stderr=proc.stderr or "",
+                returncode=0 if out["success"] else 1,
+                stdout=out.get("stdout") or "",
+                stderr=out.get("stderr") or "",
                 input_csv=input_csv_text,
             )
 
-            if proc.returncode != 0:
+            if not out["success"]:
                 reply = _format_execution_reply(
                     success=False,
                     num_orders=len(rows_out),
-                    returncode=proc.returncode,
-                    stdout=proc.stdout or "",
-                    stderr=proc.stderr or "",
-                    error_title="binance_trade_api.py exited with non-zero status",
+                    returncode=1,
+                    stdout=out.get("stdout") or "",
+                    stderr=out.get("stderr") or "",
+                    error_title="One or more orders failed",
                 )
                 return {"reply": reply, "executed": True, "success": False, "num_orders": len(rows_out)}, 200
 
             reply = _format_execution_reply(
                 success=True,
                 num_orders=len(rows_out),
-                returncode=proc.returncode,
-                stdout=proc.stdout or "",
-                stderr=proc.stderr or "",
+                returncode=0,
+                stdout=out.get("stdout") or "",
+                stderr=out.get("stderr") or "",
+                results=out.get("results"),
             )
             return {"reply": reply, "executed": True, "success": True, "num_orders": len(rows_out)}, 200
 
@@ -3145,10 +3113,10 @@ def create_app() -> Flask:
                 claude_config.get("model") or ANTHROPIC_MODEL
             )
         try:
-            resp = client.messages.create(
+            max_tokens = 1500 if mode == "suggest" else 800
+            reply = _call_claude_with_tools(
+                client,
                 model=model,
-                max_tokens=1500 if mode == "suggest" else 800,
-                temperature=0.2,
                 system="You are an AI assistant helping manage a Binance USD-M vault.",
                 messages=[
                     {
@@ -3156,17 +3124,9 @@ def create_app() -> Flask:
                         "content": [{"type": "text", "text": prompt}],
                     }
                 ],
+                max_tokens=max_tokens,
+                temperature=0.2,
             )
-            try:
-                sys.stderr.write(f"[backend_server] /api/chat raw Claude resp: {resp}\n")
-            except Exception:
-                pass
-            # anthropic.Messages.create returns content list; we take the text blocks.
-            text_parts = []
-            for block in resp.content:
-                if getattr(block, "type", None) == "text":
-                    text_parts.append(block.text)
-            reply = "\n".join(text_parts) if text_parts else "(no reply)"
             orders_block = _extract_orders_csv_block(reply)
             _append_ai_suggestion(message, reply, orders_block)
             _append_history_message(session_id, message, reply)
@@ -3234,6 +3194,8 @@ def create_app() -> Flask:
 
 def main() -> None:
     """Entry point for console script and Vercel deploy (run server)."""
+    global _positions_crawler_thread, _funding_estimate_thread, _market_data_thread
+    global _funding_market_data_thread, _funding_fee_history_thread
     port = BACKEND_PORT
     app = create_app()
     if RUN_FETCH_LOOPS:
@@ -3289,7 +3251,7 @@ def main() -> None:
             )
         # Real-time order status: Binance User Data Stream -> order_status_audit.csv (ORDER_TRADE_UPDATE)
         try:
-            _scripts = ROOT / "scripts"
+            _scripts = ROOT / "src"
             if str(_scripts) not in sys.path:
                 sys.path.insert(0, str(_scripts))
             import binance_order_status_ws as _order_ws

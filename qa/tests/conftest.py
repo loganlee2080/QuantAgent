@@ -12,7 +12,7 @@ import pytest
 
 # Project root and script under test
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = PROJECT_ROOT / "scripts"
+SCRIPTS = PROJECT_ROOT / "src"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -65,6 +65,33 @@ def mock_append_order_status_audit():
         yield m
 
 
+def _mock_exchange_info_json():
+    """Minimal exchangeInfo so resolve_symbol() works for BTC, ETH, HYPE (-> 1000HYPEUSDT)."""
+    return {
+        "symbols": [
+            {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "status": "TRADING", "quantityPrecision": 3},
+            {"symbol": "ETHUSDT", "baseAsset": "ETH", "quoteAsset": "USDT", "status": "TRADING", "quantityPrecision": 3},
+            {"symbol": "1000HYPEUSDT", "baseAsset": "1000HYPE", "quoteAsset": "USDT", "status": "TRADING", "quantityPrecision": 3},
+        ]
+    }
+
+
+@pytest.fixture
+def mock_exchange_info():
+    """Mock requests.get so exchangeInfo returns valid symbols (BTCUSDT, ETHUSDT, 1000HYPEUSDT). Use for tests that trigger resolve_symbol."""
+    def _get(url, timeout=None, **kwargs):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "exchangeInfo" in (url or ""):
+            resp.json.return_value = _mock_exchange_info_json()
+        else:
+            resp.json.return_value = {"price": "50000.5"}
+        return resp
+
+    with patch("binance_trade_api.requests.get", side_effect=_get) as m:
+        yield m
+
+
 @pytest.fixture
 def mock_requests_get():
     """Mock requests.get for _get_mark_price when testing that function directly."""
@@ -76,19 +103,6 @@ def mock_requests_get():
         resp.raise_for_status = MagicMock()
         m.return_value = resp
         yield m
-
-
-@pytest.fixture
-def temp_order_meta_csv(tmp_path):
-    """Create a temporary order_meta.csv and return its path."""
-    path = tmp_path / "order_meta.csv"
-    path.write_text(
-        "currency,quantity_precision,enabled_trade,max_size_usdt,min_size_usdt,default_lever\n"
-        "BTC,6,true,10000,5,10\n"
-        "ETH,5,true,5000,5,20\n",
-        encoding="utf-8",
-    )
-    return path
 
 
 @pytest.fixture

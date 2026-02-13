@@ -27,12 +27,6 @@
 - **Order status:** `data/binance/orders/order_status_audit.csv`; real-time updates via `scripts/binance_order_status_ws.py` (WebSocket), started by backend when `RUN_FETCH_LOOPS` is true.
 - **Positions/summary:** From `data/binance/positions.csv` and `data/binance/summary.csv`, updated by backend crawlers and on execution success / WebSocket order updates.
 
-## binance-mcp
-
-- Subproject in `binance-mcp/`: TypeScript MCP server for Binance-related tools.
-- **Do not** add `@binance/connector-typescript` (not published on npm). Use `@binance/spot` (or other official Binance packages) and inline string literals / `as any` for enums if needed.
-- Config: `binance-mcp/src/config/client.ts` (e.g. `BASE_URL` for demo/testnet). Env in `binance-mcp/.env`.
-
 ## Conventions
 
 - Prefer existing patterns: e.g. backend uses `_read_*` helpers and path constants from `env_manager`; frontend uses MUI `Box`, `Typography`, `Button`, etc.

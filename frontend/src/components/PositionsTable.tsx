@@ -24,6 +24,7 @@ import { ClosePositionDialog } from "./ClosePositionDialog";
 import { FundingHistoryDialog } from "./FundingHistoryDialog";
 import { OrderbookHistoryDialog } from "./OrderbookHistoryDialog";
 import { OrderPlaceDialog } from "./OrderPlaceDialog";
+import { useTradeIntent } from "../assistant-ui/TradeIntentContext";
 
 export interface PositionRow {
   coin: string;
@@ -48,6 +49,7 @@ export interface PositionRow {
 
 interface PositionsTableProps {
   positions: PositionRow[];
+  /** Refetch positions/summary (GET only). Do not use for backend refresh-positions-once. */
   onRefresh?: () => void | Promise<void>;
 }
 
@@ -209,6 +211,7 @@ const LeverageDialog: React.FC<LeverageDialogProps> = ({
 };
 
 export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRefresh }) => {
+  const tradeIntent = useTradeIntent();
   const [sortKey, setSortKey] = useState<SortKey>("unrealizedPnl");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [enabledCurrencies, setEnabledCurrencies] = useState<Set<string> | null>(null);
@@ -227,27 +230,6 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
     current: number;
     max: number;
   } | null>(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const resp = await fetch("/api/order-meta");
-        const json = await resp.json();
-        const meta = json.meta ?? [];
-        const enabled = new Set<string>(
-          meta
-            .filter((r: { enabled_trade?: string }) =>
-              (r.enabled_trade || "").toLowerCase() === "true"
-            )
-            .map((r: { currency: string }) => r.currency)
-        );
-        setEnabledCurrencies(enabled);
-      } catch {
-        setEnabledCurrencies(null);
-      }
-    };
-    load();
-  }, []);
 
   useEffect(() => {
     const loadLabels = async () => {
@@ -440,7 +422,13 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
           size="small"
           variant="outlined"
           disabled={selectedCoins.size === 0}
-          onClick={() => setOrderPlaceDialogOpen(true)}
+          onClick={() => {
+            const list = Array.from(selectedCoins).filter(Boolean);
+            if (list.length && tradeIntent?.openChatWithTrade) {
+              tradeIntent.openChatWithTrade(list);
+            }
+          }}
+          sx={{ display: "none" }}
         >
           Trade
         </Button>

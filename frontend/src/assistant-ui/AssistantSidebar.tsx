@@ -8,16 +8,27 @@ import { Thread } from "./Thread";
 
 interface AssistantSidebarProps {
   children: React.ReactNode;
+  /** Controlled open state (when provided, sidebar is controlled). */
+  open?: boolean;
+  /** Called when user opens/closes the sidebar (for controlled mode). */
+  onOpenChange?: (open: boolean) => void;
+  /** Uncontrolled: initial open state when open/onOpenChange not provided. */
   defaultOpen?: boolean;
   defaultWidthPercent?: number;
 }
 
 export function AssistantSidebar({
   children,
+  open: controlledOpen,
+  onOpenChange,
   defaultOpen = true,
   defaultWidthPercent = 32,
 }: AssistantSidebarProps) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const isControlled = controlledOpen !== undefined && onOpenChange !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
+  const setOpen = isControlled ? onOpenChange! : setInternalOpen;
+
   const [widthPct, setWidthPct] = useState(defaultWidthPercent);
 
   const clampedWidth = Math.min(50, Math.max(22, widthPct));

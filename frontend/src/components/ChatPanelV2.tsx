@@ -262,24 +262,34 @@ export const ChatPanelV2: React.FC<ChatPanelV2Props> = ({
       const success = Boolean(data.success);
       const numOrders =
         typeof data.num_orders === "number" ? data.num_orders : orders.length;
-      const summary = summarizeExecutionReply(reply, numOrders);
+      const content =
+        executed && !success ? reply : summarizeExecutionReply(reply, numOrders);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: summary,
+          content,
           executed,
           success,
           num_orders: numOrders,
+          orders: executed ? orders : undefined,
         },
       ]);
       if (executed && success && onExecuteComplete) {
         void onExecuteComplete();
       }
     } catch (e) {
+      const errMsg = e instanceof Error ? e.message : "Error executing orders.";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Error executing orders." },
+        {
+          role: "assistant",
+          content: errMsg,
+          executed: true,
+          success: false,
+          num_orders: orders.length,
+          orders,
+        },
       ]);
     } finally {
       setIsRunning(false);
@@ -326,6 +336,7 @@ export const ChatPanelV2: React.FC<ChatPanelV2Props> = ({
         {messages.map((m, idx) => {
           const orders = m.role === "assistant" ? m.orders ?? [] : [];
           if (m.executed) {
+            const isError = !m.success;
             return (
               <Box
                 key={idx}
@@ -338,7 +349,7 @@ export const ChatPanelV2: React.FC<ChatPanelV2Props> = ({
                   borderColor: m.success ? "success.main" : "error.main",
                   bgcolor: m.success
                     ? "rgba(76, 175, 80, 0.08)"
-                    : "rgba(244, 67, 54, 0.08)",
+                    : "rgba(244, 67, 54, 0.35)",
                   fontSize: 13,
                 }}
               >
@@ -356,7 +367,34 @@ export const ChatPanelV2: React.FC<ChatPanelV2Props> = ({
                     ? ` · ${m.num_orders} order${m.num_orders === 1 ? "" : "s"}`
                     : ""}
                 </Typography>
-                <Typography variant="body2">{m.content}</Typography>
+                <Typography
+                  variant="body2"
+                  component="pre"
+                  sx={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    ...(isError && {
+                      color: "rgba(255,255,255,0.95)",
+                      fontWeight: 500,
+                    }),
+                  }}
+                >
+                  {m.content}
+                </Typography>
+                {isError && (m.orders?.length ?? 0) > 0 && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    color="error"
+                    sx={{ mt: 1 }}
+                    disabled={isRunning}
+                    onClick={() =>
+                      handleExecuteOrdersForMessage(m.orders!)
+                    }
+                  >
+                    Retry
+                  </Button>
+                )}
               </Box>
             );
           }

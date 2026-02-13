@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect } from "react";
 import {
   ThreadPrimitive,
   MessagePrimitive,
@@ -13,6 +13,7 @@ import { ModelSelector } from "./ModelSelector";
 import { ExecuteNextContext } from "./CryptoQuantRuntimeProvider";
 import { extractOrdersCsvFromMessage, parseOrdersCsv } from "./orderUtils";
 import { OrdersTable } from "./OrdersTable";
+import { useTradeIntent } from "./TradeIntentContext";
 
 const threadMaxWidth = "44rem";
 
@@ -158,19 +159,20 @@ function OrderApproveBar() {
       .join("\n\n");
   });
   const ordersCsv = extractOrdersCsvFromMessage(messageText);
+  const orderRows = ordersCsv ? parseOrdersCsv(ordersCsv) : [];
   const { setExecuteNext } = React.useContext(ExecuteNextContext);
 
   const handleExecute = useCallback(() => {
-    if (!ordersCsv || isRunning) return;
+    if (!ordersCsv || orderRows.length === 0 || isRunning) return;
     setExecuteNext(true);
     aui.thread().append(ordersCsv);
-  }, [ordersCsv, isRunning, setExecuteNext, aui]);
+  }, [ordersCsv, orderRows.length, isRunning, setExecuteNext, aui]);
 
   const handleCancel = useCallback(() => {
     // Cancel = do nothing (no execute)
   }, []);
 
-  if (!ordersCsv || isRunning) return null;
+  if (!ordersCsv || orderRows.length === 0 || isRunning) return null;
 
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -232,9 +234,17 @@ function AssistantMessage() {
       <div style={{ padding: "0 0.25rem" }}>
         <MessagePrimitive.Parts
           components={{
-            Text: (props: { type: string; text?: string }) => (
-              <MarkdownTextPart type="text" text={props.text} />
-            ),
+            Text: (props: { type: string; text?: string }) => {
+              // Strip ORDERS_CSV block from rendered text; OrdersTable renders it as a styled grid.
+              let t = props.text ?? "";
+              const si = t.indexOf("ORDERS_CSV_START");
+              const ei = t.indexOf("ORDERS_CSV_END");
+              if (si !== -1 && ei !== -1) {
+                t = (t.slice(0, si) + t.slice(ei + "ORDERS_CSV_END".length)).trim();
+              }
+              if (!t) return null;
+              return <MarkdownTextPart type="text" text={t} />;
+            },
           }}
         />
         <MessagePrimitive.Error />
@@ -246,6 +256,22 @@ function AssistantMessage() {
 }
 
 function EmptyComposer() {
+  return null;
+}
+
+/** When pendingTradeCurrencies is set, appends a user message to the thread and consumes the intent. */
+function TradeIntentConsumer() {
+  const aui = useAui();
+  const tradeIntent = useTradeIntent();
+  const pending = tradeIntent?.pendingTradeCurrencies ?? null;
+
+  useEffect(() => {
+    if (!pending?.length || !tradeIntent) return;
+    const message = `I want to trade these: ${pending.join(", ")}. Please give a short summary of each and suggest next steps (e.g. size, direction).`;
+    aui.thread().append(message);
+    tradeIntent.consumeTradeIntent();
+  }, [pending, tradeIntent, aui]);
+
   return null;
 }
 
@@ -261,6 +287,7 @@ export function Thread() {
         ["--thread-max-width" as string]: threadMaxWidth,
       }}
     >
+      <TradeIntentConsumer />
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         style={{

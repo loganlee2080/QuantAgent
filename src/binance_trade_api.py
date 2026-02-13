@@ -34,9 +34,11 @@ import csv
 import hashlib
 import hmac
 import json
+import logging
 import math
 import sys
 import time
+import traceback
 from pathlib import Path
 from urllib.parse import urlencode
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,11 +49,101 @@ from env_manager import (
     BINANCE_FUTURES_BASE,
     BINANCE_API_KEY,
     BINANCE_API_SECRET,
-    DATA_BINANCE,
     ORDER_STATUS_AUDIT_PATH,
 )
 
-ORDER_META_PATH = DATA_BINANCE / "orders" / "order_meta.csv"
+# ── File logging for order execution ─────────────────────────────────────
+TRADE_LOG_PATH = ORDER_STATUS_AUDIT_PATH.parent / "binance_trade_api.log"
+
+
+def _get_trade_logger() -> logging.Logger:
+    """Return a logger that writes to data/binance/orders/binance_trade_api.log."""
+    name = "binance_trade_api"
+    log = logging.getLogger(name)
+    if log.handlers:
+        return log
+    log.setLevel(logging.DEBUG)
+    TRADE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(TRADE_LOG_PATH, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    log.addHandler(fh)
+    return log
+
+# ── Hardcoded order defaults (previously from order_meta.csv) ──
+ORDER_DEFAULTS = {
+    "leverage": 2,
+    "order_type": "MARKET",
+    "max_size_usdt": 100_000.0,
+    "min_size_usdt": 0.0,
+}
+
+# ── Quantity precision cache (fetched from Binance exchangeInfo) ──
+_qty_precision_cache: Dict[str, int] = {}
+
+# ── Symbol resolution: user input (e.g. HYPE, HYPEUSDT) -> Binance symbol (e.g. 1000HYPEUSDT) ──
+_valid_usdt_symbols: set = set()
+_base_to_symbol: Dict[str, str] = {}
+
+
+def _load_exchange_symbols() -> None:
+    """Fetch exchangeInfo and populate _valid_usdt_symbols and _base_to_symbol (and _qty_precision_cache)."""
+    global _valid_usdt_symbols, _base_to_symbol, _qty_precision_cache
+    if _valid_usdt_symbols:
+        return
+    try:
+        url = f"{BINANCE_FUTURES_BASE}/fapi/v1/exchangeInfo"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        for s in data.get("symbols", []):
+            sym = (s.get("symbol") or "").strip()
+            base = (s.get("baseAsset") or "").strip()
+            quote = (s.get("quoteAsset") or "").strip()
+            if not sym or quote != "USDT" or (s.get("status") or "").upper() != "TRADING":
+                continue
+            _valid_usdt_symbols.add(sym)
+            _qty_precision_cache[sym] = int(s.get("quantityPrecision", 3))
+            _base_to_symbol[base] = sym
+            # Map shortened base to symbol (e.g. HYPE -> 1000HYPEUSDT when base is 1000HYPE)
+            if base.startswith("1000") and len(base) > 4:
+                _base_to_symbol[base[4:]] = sym
+    except Exception as e:
+        print(f"Warning: failed to fetch exchangeInfo: {e}", file=sys.stderr)
+
+
+def resolve_symbol(user_input: str) -> str:
+    """Convert user symbol (e.g. HYPE, HYPEUSDT) to Binance futures symbol (e.g. 1000HYPEUSDT).
+
+    Uses exchangeInfo so that names like HYPE resolve to 1000HYPEUSDT when that is how Binance lists them.
+    """
+    user_input = (user_input or "").strip().upper()
+    if not user_input:
+        raise ValueError("Empty symbol")
+    _load_exchange_symbols()
+    if user_input in _valid_usdt_symbols:
+        return user_input
+    base = user_input[:-4] if user_input.endswith("USDT") else user_input
+    if base in _base_to_symbol:
+        return _base_to_symbol[base]
+    candidate = base + "USDT"
+    if candidate in _valid_usdt_symbols:
+        return candidate
+    raise ValueError(f"Unknown or unsupported symbol: {user_input!r} (not in Binance USD-M futures)")
+
+
+def _fetch_quantity_precision(symbol: str) -> int:
+    """Fetch quantityPrecision for a symbol from Binance exchangeInfo.
+
+    Uses a module-level cache to avoid repeated calls.
+    Falls back to 3 if the API call fails.
+    """
+    symbol = resolve_symbol(symbol)
+    if symbol in _qty_precision_cache:
+        return _qty_precision_cache[symbol]
+    _load_exchange_symbols()
+    return _qty_precision_cache.get(symbol, 3)
+
 
 ORDER_STATUS_AUDIT_FIELDS = [
     "timestamp_utc",
@@ -70,21 +162,6 @@ ORDER_STATUS_AUDIT_FIELDS = [
 ]
 
 
-def _load_order_meta() -> Dict[str, Dict[str, str]]:
-    meta: Dict[str, Dict[str, str]] = {}
-    if not ORDER_META_PATH.exists():
-        return meta
-    with open(ORDER_META_PATH, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            cur = (row.get("currency") or "").strip().upper()
-            if not cur:
-                continue
-            meta[cur] = row
-    return meta
-
-
-ORDER_META = _load_order_meta()
 
 
 def _signed_request(
@@ -174,6 +251,7 @@ def get_order(
     By default appends a row to order_status_audit.csv (ORDER_STATUS_AUDIT_PATH) with event_type=status_check.
     Set write_audit=False to skip writing to the audit.
     """
+    symbol = resolve_symbol(symbol)
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
     if order_id is None and not (client_order_id or "").strip():
@@ -208,6 +286,7 @@ def set_leverage(
     api_secret: Optional[str] = None,
 ) -> dict:
     """Set initial leverage for a symbol. 1 <= leverage <= maxLeverage."""
+    symbol = resolve_symbol(symbol)
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
     leverage = int(leverage)
@@ -225,6 +304,7 @@ def set_leverage(
 
 def _get_mark_price(symbol: str) -> float:
     """Fetch current mark/last price for symbol from ticker endpoint."""
+    symbol = resolve_symbol(symbol)
     url = f"{BINANCE_FUTURES_BASE}/fapi/v1/ticker/price"
     r = requests.get(url, params={"symbol": symbol}, timeout=15)
     r.raise_for_status()
@@ -246,6 +326,7 @@ def close_position(
     - Uses /fapi/v2/positionRisk to detect current positionAmt.
     - If no open position, returns None.
     """
+    symbol = resolve_symbol(symbol)
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
 
@@ -315,6 +396,7 @@ def close_position_limit(
     - fraction: 1.0 to close 100%, 0.5 to close 50%, etc. (clamped to [0, 1]).
     - price: limit price for the order.
     """
+    symbol = resolve_symbol(symbol)
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
 
@@ -391,8 +473,9 @@ def place_market_order(
     - side: "BUY" or "SELL"
     - quote_usdt: notional size in USDT (float)
     - leverage: optional, set before placing the order
-    - quantity_precision: optional, max decimal places for quantity (from order_meta)
+    - quantity_precision: optional, max decimal places for quantity
     """
+    symbol = resolve_symbol(symbol)
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
 
@@ -412,9 +495,9 @@ def place_market_order(
     price = _get_mark_price(symbol)
     if price <= 0:
         raise RuntimeError(f"Got non-positive price for {symbol}: {price}")
-    # Use a reasonable precision; Binance will reject if too granular.
+    # Use symbol-specific precision from exchangeInfo; Binance rejects excess decimals.
     raw_qty = notional / price
-    prec = quantity_precision if quantity_precision is not None else 6
+    prec = quantity_precision if quantity_precision is not None else _fetch_quantity_precision(symbol)
     # Clamp precision to a sensible range
     if prec < 0:
         prec = 0
@@ -447,17 +530,9 @@ def _direct_to_side(direct: str) -> str:
     raise ValueError(f"Unknown direct: {direct!r} (expected 'Long' or 'Short')")
 
 
-def _quantity_from_usdt(symbol: str, amount_usdt: float, price: float) -> str:
+def _quantity_from_usdt(symbol: str, amount_usdt: float, price: float, quantity_precision: Optional[int] = None) -> str:
     """Compute contract quantity from USDT notional and price; return string for API."""
-    currency = symbol.replace("USDT", "") if symbol.endswith("USDT") else symbol
-    meta = ORDER_META.get(currency, {})
-    qp_str = (meta.get("quantity_precision") or "").strip()
-    prec = 6
-    if qp_str:
-        try:
-            prec = int(qp_str)
-        except ValueError:
-            pass
+    prec = quantity_precision if quantity_precision is not None else _fetch_quantity_precision(symbol)
     prec = max(0, min(8, prec))
     if price <= 0:
         raise ValueError(f"Invalid price for {symbol}: {price}")
@@ -498,9 +573,13 @@ def place_batch_orders(
         symbols_seen: set = set()
         for o in orders:
             sym = (o.get("symbol") or "").strip().upper()
-            if sym and sym.endswith("USDT") and sym not in symbols_seen:
-                symbols_seen.add(sym)
-                set_leverage(sym, leverage, api_key=api_key, api_secret=api_secret)
+            if not sym or not sym.endswith("USDT"):
+                sym = (sym or "") + "USDT"
+            if sym:
+                resolved = resolve_symbol(sym)
+                if resolved not in symbols_seen:
+                    symbols_seen.add(resolved)
+                    set_leverage(resolved, leverage, api_key=api_key, api_secret=api_secret)
 
     BATCH_SIZE = 5
     all_responses: list = []
@@ -511,6 +590,7 @@ def place_batch_orders(
             symbol = (o.get("symbol") or "").strip().upper()
             if not symbol or not symbol.endswith("USDT"):
                 symbol = (symbol or "") + "USDT"
+            symbol = resolve_symbol(symbol)
             order_type = (o.get("type") or o.get("orderType") or "MARKET").strip().upper()
             if order_type not in ("MARKET", "LIMIT"):
                 order_type = "MARKET"
@@ -558,6 +638,124 @@ def place_batch_orders(
     return all_responses
 
 
+def place_orders_from_rows(
+    rows: List[dict],
+    api_key: Optional[str] = None,
+    api_secret: Optional[str] = None,
+) -> dict:
+    """
+    Place a batch of market orders from a list of row dicts (same shape as CSV rows).
+
+    Row keys: currency, size_usdt (or size), direct, lever, reduce_only (optional).
+
+    Returns:
+        success: True if no order failed.
+        results: list of {"currency": str, "ok": bool, "response": dict | None, "error": str | None}
+        stdout: combined log lines (for display).
+        stderr: combined error lines (for display).
+    """
+    if api_key is None or api_secret is None:
+        api_key, api_secret = _get_keys()
+
+    stdout_lines: List[str] = []
+    stderr_lines: List[str] = []
+    results: List[dict] = []
+    any_failed = False
+
+    for row in rows:
+        currency = (row.get("currency") or "").strip().upper()
+        size_str = (row.get("size_usdt") or row.get("size") or "").strip()
+        direct = (row.get("direct") or "").strip()
+        lever_str = (row.get("lever") or "").strip()
+        reduce_only = (row.get("reduce_only") or "").strip().lower() in ("true", "1", "yes", "y")
+
+        if not currency or not size_str or not direct:
+            stdout_lines.append(f"Skipping invalid row: {row}")
+            continue
+
+        try:
+            size_usdt = float(size_str)
+        except ValueError:
+            stdout_lines.append(f"Invalid size_usdt in row (skipping): {row}")
+            continue
+
+        max_size = ORDER_DEFAULTS["max_size_usdt"]
+        min_size = ORDER_DEFAULTS["min_size_usdt"]
+
+        if not reduce_only:
+            if size_usdt > max_size:
+                stdout_lines.append(
+                    f"Clamping {currency} size from {size_usdt} to max_size_usdt {max_size}"
+                )
+                size_usdt = max_size
+            if min_size > 0 and size_usdt < min_size:
+                stdout_lines.append(
+                    f"Size {size_usdt} below min_size_usdt {min_size} for {currency}; skipping row."
+                )
+                continue
+
+        leverage = None
+        if lever_str:
+            try:
+                leverage = int(lever_str)
+            except ValueError:
+                stdout_lines.append(f"Invalid lever in row (skipping leverage change): {row}")
+        else:
+            leverage = ORDER_DEFAULTS["leverage"]
+
+        quantity_precision = None
+        symbol = resolve_symbol(currency + "USDT")
+
+        try:
+            d = direct.strip().lower()
+            if d == "close" or reduce_only:
+                resp = close_position(
+                    symbol, fraction=1.0, api_key=api_key, api_secret=api_secret
+                )
+                if resp is not None:
+                    stdout_lines.append(f"Order OK (close): {json.dumps(resp)}")
+                    results.append({"currency": currency, "ok": True, "response": resp, "error": None})
+            elif d in ("sell", "buy"):
+                side = direct.strip().upper()
+                resp = place_market_order(
+                    symbol,
+                    side,
+                    size_usdt,
+                    leverage=leverage,
+                    quantity_precision=quantity_precision,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                )
+                stdout_lines.append(f"Order OK: {json.dumps(resp)}")
+                results.append({"currency": currency, "ok": True, "response": resp, "error": None})
+            else:
+                side = _direct_to_side(direct)
+                resp = place_market_order(
+                    symbol,
+                    side,
+                    size_usdt,
+                    leverage=leverage,
+                    quantity_precision=quantity_precision,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                )
+                stdout_lines.append(f"Order OK: {json.dumps(resp)}")
+                results.append({"currency": currency, "ok": True, "response": resp, "error": None})
+        except Exception as e:
+            any_failed = True
+            err_str = str(e)
+            _get_trade_logger().exception("Order FAILED for %s: %s", currency, e)
+            stderr_lines.append(f"Order FAILED for {currency}: {err_str}")
+            results.append({"currency": currency, "ok": False, "response": None, "error": err_str})
+
+    return {
+        "success": not any_failed,
+        "results": results,
+        "stdout": "\n".join(stdout_lines),
+        "stderr": "\n".join(stderr_lines),
+    }
+
+
 def place_orders_from_csv(csv_path: Path) -> None:
     """
     Place a batch of market orders from a CSV file with header:
@@ -570,7 +768,6 @@ def place_orders_from_csv(csv_path: Path) -> None:
     - lever: integer leverage (optional/blank -> no change)
     - reduce_only: optional 'true' when direct is SELL/BUY for closing (Binance has no Close side)
     """
-    api_key, api_secret = _get_keys()
     csv_path = csv_path.resolve()
     if not csv_path.exists():
         print(f"CSV not found: {csv_path}", file=sys.stderr)
@@ -585,104 +782,14 @@ def place_orders_from_csv(csv_path: Path) -> None:
         print("No orders in CSV.")
         return
 
-    for row in rows:
-        currency = (row.get("currency") or "").strip().upper()
-        size_str = (row.get("size_usdt") or row.get("size") or "").strip()
-        direct = (row.get("direct") or "").strip()
-        lever_str = (row.get("lever") or "").strip()
-        reduce_only = (row.get("reduce_only") or "").strip().lower() in ("true", "1", "yes", "y")
+    out = place_orders_from_rows(rows)
+    if out["stdout"]:
+        print(out["stdout"])
+    if out["stderr"]:
+        print(out["stderr"], file=sys.stderr)
 
-        if not currency or not size_str or not direct:
-            print(f"Skipping invalid row: {row}")
-            continue
-
-        try:
-            size_usdt = float(size_str)
-        except ValueError:
-            print(f"Invalid size_usdt in row (skipping): {row}")
-            continue
-
-        # Apply meta configuration if present
-        meta = ORDER_META.get(currency, {})
-        enabled = (meta.get("enabled_trade") or "true").strip().lower()
-        if enabled not in ("1", "true", "yes", "y"):
-            print(f"Trading disabled for {currency} in order_meta.csv; skipping row: {row}")
-            continue
-
-        # Max / min size in USDT
-        max_size_str = (meta.get("max_size_usdt") or "").strip()
-        min_size_str = (meta.get("min_size_usdt") or "").strip()
-        try:
-            max_size = float(max_size_str) if max_size_str else 1000.0
-        except ValueError:
-            max_size = 1000.0
-        # Binance enforces a minimum notional (often 5 USDT); use 5.0 as a safe default floor
-        try:
-            min_size = float(min_size_str) if min_size_str else 5.0
-        except ValueError:
-            min_size = 5.0
-
-        if not reduce_only:
-            if size_usdt > max_size:
-                print(f"Clamping {currency} size from {size_usdt} to max_size_usdt {max_size}")
-                size_usdt = max_size
-            if size_usdt < min_size:
-                print(f"Size {size_usdt} below min_size_usdt {min_size} for {currency}; skipping row.")
-                continue
-
-        leverage = None
-        if lever_str:
-            try:
-                leverage = int(lever_str)
-            except ValueError:
-                print(f"Invalid lever in row (skipping leverage change): {row}")
-        elif meta.get("default_lever"):
-            try:
-                leverage = int(meta["default_lever"])
-            except ValueError:
-                pass
-
-        quantity_precision = None
-        qp_str = (meta.get("quantity_precision") or "").strip()
-        if qp_str:
-            try:
-                quantity_precision = int(qp_str)
-            except ValueError:
-                pass
-
-        symbol = currency + "USDT"
-        try:
-            d = direct.strip().lower()
-            if d == "close" or reduce_only:
-                resp = close_position(symbol, fraction=1.0, api_key=api_key, api_secret=api_secret)
-                if resp is not None:
-                    print(f"Order OK (close): {json.dumps(resp, indent=2)}")
-            elif d in ("sell", "buy"):
-                side = direct.strip().upper()
-                resp = place_market_order(
-                    symbol,
-                    side,
-                    size_usdt,
-                    leverage=leverage,
-                    quantity_precision=quantity_precision,
-                    api_key=api_key,
-                    api_secret=api_secret,
-                )
-                print(f"Order OK: {json.dumps(resp, indent=2)}")
-            else:
-                side = _direct_to_side(direct)
-                resp = place_market_order(
-                    symbol,
-                    side,
-                    size_usdt,
-                    leverage=leverage,
-                    quantity_precision=quantity_precision,
-                    api_key=api_key,
-                    api_secret=api_secret,
-                )
-                print(f"Order OK: {json.dumps(resp, indent=2)}")
-        except Exception as e:
-            print(f"Order FAILED for {row}: {e}", file=sys.stderr)
+    if not out["success"]:
+        sys.exit(1)
 
 
 ORDER_CLOSE_TEMPLATE_PATH = (
@@ -720,6 +827,7 @@ def place_close_orders_from_template(csv_path: Optional[Path] = None) -> None:
             continue
         if not symbol.endswith("USDT"):
             symbol = symbol + "USDT"
+        symbol = resolve_symbol(symbol)
         try:
             fraction = float(row.get("fraction") or "1.0")
         except ValueError:
@@ -775,6 +883,7 @@ def main(argv: list[str]) -> None:
         symbol = (argv[2] or "").strip().upper()
         if not symbol.endswith("USDT"):
             symbol = symbol + "USDT"
+        symbol = resolve_symbol(symbol)
         try:
             order_id = int(argv[3])
         except ValueError:

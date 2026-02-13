@@ -10,7 +10,7 @@ import pytest
 
 # Ensure scripts dir on path (conftest does this; re-do for import)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = PROJECT_ROOT / "scripts"
+SCRIPTS = PROJECT_ROOT / "src"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -43,56 +43,36 @@ def test_direct_to_side_invalid_raises():
 # ---------- TC-02: _quantity_from_usdt (unit, functional) ----------
 @pytest.mark.unit
 def test_quantity_from_usdt_basic():
-    # Default precision 6 when no meta
-    with patch.dict(bta.ORDER_META, {}, clear=True):
-        qty = bta._quantity_from_usdt("BTCUSDT", 1000.0, 50000.0)
-        assert qty == "0.020000"  # 1000/50000 = 0.02, 6 decimals
+    # Explicit precision 6
+    qty = bta._quantity_from_usdt("BTCUSDT", 1000.0, 50000.0, quantity_precision=6)
+    assert qty == "0.020000"  # 1000/50000 = 0.02, 6 decimals
 
 
 @pytest.mark.unit
-def test_quantity_from_usdt_with_meta_precision():
-    with patch.dict(bta.ORDER_META, {"BTC": {"quantity_precision": "4"}}, clear=False):
-        qty = bta._quantity_from_usdt("BTCUSDT", 1000.0, 50000.0)
-        assert qty == "0.0200"
+def test_quantity_from_usdt_with_precision():
+    qty = bta._quantity_from_usdt("BTCUSDT", 1000.0, 50000.0, quantity_precision=4)
+    assert qty == "0.0200"
+
+
+@pytest.mark.unit
+def test_quantity_from_usdt_btc_precision():
+    # BTC typically has quantityPrecision=3 on Binance
+    qty = bta._quantity_from_usdt("BTCUSDT", 1000.0, 50000.0, quantity_precision=3)
+    assert qty == "0.020"
 
 
 @pytest.mark.unit
 def test_quantity_from_usdt_invalid_price():
-    with patch.dict(bta.ORDER_META, {}, clear=True):
-        with pytest.raises(ValueError, match="Invalid price"):
-            bta._quantity_from_usdt("BTCUSDT", 1000.0, 0)
-        with pytest.raises(ValueError, match="Invalid price"):
-            bta._quantity_from_usdt("BTCUSDT", 1000.0, -1.0)
+    with pytest.raises(ValueError, match="Invalid price"):
+        bta._quantity_from_usdt("BTCUSDT", 1000.0, 0, quantity_precision=6)
+    with pytest.raises(ValueError, match="Invalid price"):
+        bta._quantity_from_usdt("BTCUSDT", 1000.0, -1.0, quantity_precision=6)
 
 
 @pytest.mark.unit
 def test_quantity_from_usdt_non_positive_quantity():
-    with patch.dict(bta.ORDER_META, {}, clear=True):
-        with pytest.raises(ValueError, match="non-positive quantity"):
-            bta._quantity_from_usdt("BTCUSDT", 0.0001, 50000.0)  # qty too small
-
-
-# ---------- TC-03: _load_order_meta (unit) ----------
-@pytest.mark.unit
-def test_load_order_meta_missing_file(tmp_path):
-    with patch.object(bta, "ORDER_META_PATH", tmp_path / "nonexistent.csv"):
-        meta = bta._load_order_meta()
-        assert meta == {}
-
-
-@pytest.mark.unit
-def test_load_order_meta_with_file(tmp_path):
-    meta_path = tmp_path / "order_meta.csv"
-    meta_path.write_text(
-        "currency,quantity_precision\nBTC,6\n,skip\nETH,5\n",
-        encoding="utf-8",
-    )
-    with patch.object(bta, "ORDER_META_PATH", meta_path):
-        meta = bta._load_order_meta()
-        assert "BTC" in meta
-        assert meta["BTC"].get("quantity_precision") == "6"
-        assert "ETH" in meta
-        assert "" not in meta  # blank currency skipped
+    with pytest.raises(ValueError, match="non-positive quantity"):
+        bta._quantity_from_usdt("BTCUSDT", 0.0001, 50000.0, quantity_precision=6)  # qty too small
 
 
 # ---------- TC-04: set_leverage (integration, mocked) ----------
@@ -219,27 +199,24 @@ def test_place_batch_orders_invalid_amount_raises(mock_get_keys, mock_get_mark_p
 
 
 @pytest.mark.integration
-def test_place_batch_orders_chunks_of_five(mock_get_keys, mock_get_mark_price, mock_signed_request):
-    # First batch 5 orders, second batch 1 order
+def test_place_batch_orders_chunks_of_five(mock_get_keys, mock_get_mark_price, mock_signed_request, mock_exchange_info):
+    # First batch 5 orders, second batch 1 order. Use only BTCUSDT/ETHUSDT (in mock exchangeInfo) so quantity stays positive.
     mock_signed_request.side_effect = [
         (200, [{"orderId": i} for i in range(5)]),
         (200, [{"orderId": 5}]),
     ]
-    # Use ORDER_META with precision so 50 USDT at mock price 50000 -> qty 0.001 is valid
-    meta = {c: {"quantity_precision": "5"} for c in ("BTC", "ETH", "DOGE", "SOL", "XRP", "ADA")}
     orders = [
         {"symbol": "BTCUSDT", "amountUsdt": 100, "positionSide": "LONG"},
         {"symbol": "ETHUSDT", "amountUsdt": 100, "positionSide": "SHORT"},
-        {"symbol": "DOGEUSDT", "amountUsdt": 50, "positionSide": "LONG"},
-        {"symbol": "SOLUSDT", "amountUsdt": 50, "positionSide": "SHORT"},
-        {"symbol": "XRPUSDT", "amountUsdt": 50, "positionSide": "LONG"},
-        {"symbol": "ADAUSDT", "amountUsdt": 50, "positionSide": "LONG"},
+        {"symbol": "BTCUSDT", "amountUsdt": 100, "positionSide": "LONG"},
+        {"symbol": "ETHUSDT", "amountUsdt": 100, "positionSide": "SHORT"},
+        {"symbol": "BTCUSDT", "amountUsdt": 100, "positionSide": "SHORT"},
+        {"symbol": "ETHUSDT", "amountUsdt": 100, "positionSide": "LONG"},
     ]
-    with patch.dict(bta.ORDER_META, meta, clear=False):
-        result = bta.place_batch_orders(orders, api_key="k", api_secret="s")
-        assert len(result) == 6
-        # Batch size 5: first call with 5, second with 1
-        assert mock_signed_request.call_count == 2
+    result = bta.place_batch_orders(orders, api_key="k", api_secret="s")
+    assert len(result) == 6
+    # Batch size 5: first call with 5, second with 1
+    assert mock_signed_request.call_count == 2
 
 
 @pytest.mark.integration
@@ -286,7 +263,7 @@ def test_place_orders_from_csv_skips_invalid_row(mock_get_keys, tmp_path):
 
 
 @pytest.mark.integration
-def test_place_orders_from_csv_close_calls_close_position(mock_get_keys, mock_signed_request, tmp_path):
+def test_place_orders_from_csv_close_calls_close_position(mock_get_keys, mock_signed_request, mock_exchange_info, tmp_path):
     mock_signed_request.side_effect = [
         (200, [{"symbol": "BTCUSDT", "positionAmt": "0.1"}]),
         (200, {"orderId": 1}),
@@ -297,8 +274,7 @@ def test_place_orders_from_csv_close_calls_close_position(mock_get_keys, mock_si
         "BTC,0,Close,,true\n",
         encoding="utf-8",
     )
-    with patch.dict(bta.ORDER_META, {"BTC": {"enabled_trade": "true"}}, clear=False):
-        bta.place_orders_from_csv(csv_path)
+    bta.place_orders_from_csv(csv_path)
     assert mock_signed_request.call_count >= 2
 
 
@@ -311,7 +287,7 @@ def test_place_close_orders_from_template_file_not_found():
 
 
 @pytest.mark.integration
-def test_place_close_orders_from_template_market(mock_get_keys, mock_signed_request, temp_close_template_csv):
+def test_place_close_orders_from_template_market(mock_get_keys, mock_signed_request, mock_exchange_info, temp_close_template_csv):
     mock_signed_request.side_effect = [
         (200, [{"symbol": "BTCUSDT", "positionAmt": "0.1"}]),
         (200, {"orderId": 1}),
@@ -355,32 +331,34 @@ def test_get_order_requires_order_id_or_client_order_id(mock_get_keys):
 
 
 @pytest.mark.integration
-def test_get_order_by_order_id(mock_get_keys, mock_signed_request, mock_append_order_status_audit):
+def test_get_order_by_order_id(mock_get_keys, mock_signed_request, mock_exchange_info, mock_append_order_status_audit):
     mock_signed_request.return_value = (200, {"orderId": 84047010, "symbol": "BTCUSDT", "status": "FILLED"})
     result = bta.get_order("BTCUSDT", order_id=84047010, api_key="k", api_secret="s", write_audit=False)
     assert result["orderId"] == 84047010
     assert result["status"] == "FILLED"
     mock_signed_request.assert_called_once()
     call_args = mock_signed_request.call_args[0]
-    assert call_args[3] == "GET"
+    assert call_args[2] == "GET"
+    assert call_args[3] == "/fapi/v1/order"
     assert call_args[4].get("symbol") == "BTCUSDT"
     assert call_args[4].get("orderId") == "84047010"
     mock_append_order_status_audit.assert_not_called()
 
 
 @pytest.mark.integration
-def test_get_order_write_audit_calls_append(mock_get_keys, mock_signed_request, mock_append_order_status_audit):
+def test_get_order_write_audit_calls_append(mock_get_keys, mock_signed_request, mock_exchange_info, mock_append_order_status_audit):
     mock_signed_request.return_value = (200, {"orderId": 1, "symbol": "ETHUSDT", "status": "NEW"})
     bta.get_order("ETHUSDT", order_id=1, api_key="k", api_secret="s", write_audit=True)
     mock_append_order_status_audit.assert_called_once()
-    call_args = mock_append_order_status_audit.call_args[0]
-    assert call_args[0]["orderId"] == 1
-    assert call_args[1] == "status_check"
-    assert call_args[2] == "api"
+    pos_args = mock_append_order_status_audit.call_args[0]
+    kwargs = mock_append_order_status_audit.call_args[1]
+    assert pos_args[0]["orderId"] == 1
+    assert kwargs.get("event_type") == "status_check"
+    assert kwargs.get("source") == "api"
 
 
 @pytest.mark.smoke
-def test_main_order_status_calls_get_order(mock_get_keys, mock_signed_request, mock_append_order_status_audit):
+def test_main_order_status_calls_get_order(mock_get_keys, mock_signed_request, mock_exchange_info, mock_append_order_status_audit):
     mock_signed_request.return_value = (200, {"orderId": 123, "symbol": "BTCUSDT", "status": "FILLED"})
     with patch.object(sys, "argv", ["binance_trade_api.py", "--order-status", "BTCUSDT", "123"]):
         bta.main(sys.argv)

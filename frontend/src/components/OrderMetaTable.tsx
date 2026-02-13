@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   Box,
   Chip,
@@ -24,24 +24,7 @@ export interface OrderMetaRow {
 }
 
 export const OrderMetaTable: React.FC = () => {
-  const [rows, setRows] = useState<OrderMetaRow[]>([]);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const resp = await fetch("/api/order-meta");
-        const json = await resp.json();
-        const all = json.meta ?? [];
-        const enabled = all.filter(
-          (r: OrderMetaRow) => (r.enabled_trade || "").toLowerCase() === "true"
-        );
-        setRows(enabled);
-      } catch (e) {
-        console.error("Failed to load order meta", e);
-      }
-    };
-    load();
-  }, []);
+  const [rows] = useState<OrderMetaRow[]>([]);
 
   return (
     <Box>

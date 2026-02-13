@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   AppBar,
   Box,
@@ -17,6 +17,7 @@ import { PositionsTable, PositionRow } from "./components/PositionsTable";
 import { OrderHistoryTable } from "./components/OrderHistoryTable";
 import { MarketDataTable } from "./components/MarketDataTable";
 import { AssistantSidebar } from "./assistant-ui/AssistantSidebar";
+import { TradeIntentContext } from "./assistant-ui/TradeIntentContext";
 
 interface SummaryData {
   totalWalletBalance?: string;
@@ -47,6 +48,19 @@ const App: React.FC = () => {
   const [pnlLoading, setPnlLoading] = useState(false);
   const [pnlError, setPnlError] = useState<string | null>(null);
   const [pnlHoverIndex, setPnlHoverIndex] = useState<number | null>(null);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [pendingTradeCurrencies, setPendingTradeCurrencies] = useState<string[] | null>(null);
+
+  const openChatWithTrade = useCallback((currencies: string[]) => {
+    const list = currencies.filter(Boolean);
+    if (!list.length) return;
+    setChatOpen(true);
+    setPendingTradeCurrencies(list);
+  }, []);
+
+  const consumeTradeIntent = useCallback(() => {
+    setPendingTradeCurrencies(null);
+  }, []);
 
   const unrealized = summary.totalUnrealizedProfit;
   const unrealizedNumber = unrealized !== undefined ? Number(unrealized) : NaN;
@@ -221,17 +235,36 @@ const App: React.FC = () => {
     };
   }, []);
 
+  const tradeIntentValue = React.useMemo(
+    () => ({
+      pendingTradeCurrencies,
+      openChatWithTrade,
+      consumeTradeIntent,
+    }),
+    [pendingTradeCurrencies, openChatWithTrade, consumeTradeIntent],
+  );
+
   return (
-    <Box sx={{ display: "flex", height: "100vh", flexDirection: "column", overflow: "hidden" }}>
-      <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <AssistantSidebar defaultOpen={true} defaultWidthPercent={32}>
+    <TradeIntentContext.Provider value={tradeIntentValue}>
+      <Box sx={{ display: "flex", height: "100vh", flexDirection: "column", overflow: "hidden" }}>
+        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <AssistantSidebar
+            open={chatOpen}
+            onOpenChange={setChatOpen}
+            defaultWidthPercent={32}
+          >
           <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
             {/* Scrollable content (tables) */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
               <Container maxWidth={false} sx={{ mt: 2, px: 2, pb: 0 }}>
                 <Grid container spacing={2}>
                   <Grid item xs={12}>
-                    {tabIndex === 0 && <PositionsTable positions={positions} />}
+                    {tabIndex === 0 && (
+                      <PositionsTable
+                        positions={positions}
+                        onRefresh={fetchData}
+                      />
+                    )}
                     {tabIndex === 1 && <MarketDataTable />}
                   </Grid>
                 </Grid>
@@ -518,6 +551,7 @@ const App: React.FC = () => {
         </DialogContent>
       </Dialog>
     </Box>
+    </TradeIntentContext.Provider>
   );
 };
 

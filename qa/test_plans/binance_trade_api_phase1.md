@@ -37,16 +37,11 @@
 - **Expected:** String quantity with correct precision; positive; no float artifacts.
 - **Edge:** amount_usdt/price → qty ≤ 0 → `ValueError`. price ≤ 0 → `ValueError`.
 
-**Risk:** Medium. **Automation:** Unit test with patched meta.
+**Risk:** Medium. **Automation:** Unit test.
 
 ---
 
-### TC-03: _load_order_meta (unit)
-
-- **TC-03a:** When `order_meta.csv` does not exist → return `{}`.
-- **TC-03b:** When file exists with valid rows → return dict keyed by currency; blank currency skipped.
-
-**Risk:** Low. **Automation:** Unit test (temp file or path mock).
+### TC-03: (removed — order_meta.csv eliminated; defaults are hardcoded)
 
 ---
 
