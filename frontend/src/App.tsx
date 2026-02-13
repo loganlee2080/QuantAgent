@@ -50,6 +50,7 @@ const App: React.FC = () => {
   const [pnlHoverIndex, setPnlHoverIndex] = useState<number | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [pendingTradeCurrencies, setPendingTradeCurrencies] = useState<string[] | null>(null);
+  const [pendingChatText, setPendingChatText] = useState<string | null>(null);
 
   const openChatWithTrade = useCallback((currencies: string[]) => {
     const list = currencies.filter(Boolean);
@@ -60,6 +61,17 @@ const App: React.FC = () => {
 
   const consumeTradeIntent = useCallback(() => {
     setPendingTradeCurrencies(null);
+  }, []);
+
+  const addTextToChat = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setChatOpen(true);
+    setPendingChatText(trimmed);
+  }, []);
+
+  const consumeChatText = useCallback(() => {
+    setPendingChatText(null);
   }, []);
 
   const unrealized = summary.totalUnrealizedProfit;
@@ -240,8 +252,11 @@ const App: React.FC = () => {
       pendingTradeCurrencies,
       openChatWithTrade,
       consumeTradeIntent,
+      pendingChatText,
+      addTextToChat,
+      consumeChatText,
     }),
-    [pendingTradeCurrencies, openChatWithTrade, consumeTradeIntent],
+    [pendingTradeCurrencies, openChatWithTrade, consumeTradeIntent, pendingChatText, addTextToChat, consumeChatText],
   );
 
   return (

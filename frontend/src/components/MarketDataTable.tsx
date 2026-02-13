@@ -380,6 +380,22 @@ export const MarketDataTable: React.FC = () => {
             >
               Refresh
             </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={selectedCurrencies.size === 0}
+              onClick={() => {
+                const list = Array.from(selectedCurrencies)
+                  .filter(Boolean)
+                  .map((cur) => (cur || "").toString().trim().toUpperCase());
+                if (!list.length || !tradeIntent?.addTextToChat) return;
+                const unique = Array.from(new Set(list));
+                const msg = `Currency list: ${unique.join(", ")}\nWhat I want to do: `;
+                tradeIntent.addTextToChat(msg);
+              }}
+            >
+              Add to chat
+            </Button>
             <FormControlLabel
               control={
                 <Switch

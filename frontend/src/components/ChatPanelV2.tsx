@@ -319,9 +319,28 @@ export const ChatPanelV2: React.FC<ChatPanelV2Props> = ({
         }}
       >
         <Typography variant="subtitle1">AI Trading Chat</Typography>
-        <IconButton size="small" onClick={onClose}>
-          <CloseIcon fontSize="small" />
-        </IconButton>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            color="inherit"
+            onClick={() => {
+              if (eventSourceRef.current) {
+                eventSourceRef.current.close();
+                eventSourceRef.current = null;
+              }
+              setMessages([]);
+              setInput("");
+              setLastOrdersCsv(null);
+              setIsRunning(false);
+            }}
+          >
+            Reset
+          </Button>
+          <IconButton size="small" onClick={onClose}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
       </Box>
       <Divider />
       <Box

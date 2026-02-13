@@ -414,6 +414,22 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
           size="small"
           variant="outlined"
           disabled={selectedCoins.size === 0}
+          onClick={() => {
+            const list = Array.from(selectedCoins)
+              .filter(Boolean)
+              .map((coin) => (coin || "").toString().trim().toUpperCase());
+            if (!list.length || !tradeIntent?.addTextToChat) return;
+            const unique = Array.from(new Set(list));
+            const msg = `Currency list: ${unique.join(", ")}\nWhat I want to do: `;
+            tradeIntent.addTextToChat(msg);
+          }}
+        >
+          Add to chat
+        </Button>
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={selectedCoins.size === 0}
           onClick={() => setCloseDialogOpen(true)}
         >
           Close position

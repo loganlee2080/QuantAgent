@@ -9,6 +9,12 @@ export interface TradeIntentContextValue {
   openChatWithTrade: (currencies: string[]) => void;
   /** Called by Thread after consuming the intent (append + send). */
   consumeTradeIntent: () => void;
+  /** Pending plain-text prompt to prefill into the chat composer. */
+  pendingChatText: string | null;
+  /** Open chat (if hidden) and prefill the composer with given text. */
+  addTextToChat: (text: string) => void;
+  /** Called by Thread after applying pendingChatText into the composer. */
+  consumeChatText: () => void;
 }
 
 export const TradeIntentContext = createContext<TradeIntentContextValue | null>(null);

@@ -275,6 +275,21 @@ function TradeIntentConsumer() {
   return null;
 }
 
+/** When pendingChatText is set, prefill the composer input and consume the intent. */
+function ChatTextConsumer() {
+  const aui = useAui();
+  const tradeIntent = useTradeIntent();
+  const pendingText = tradeIntent?.pendingChatText ?? null;
+
+  useEffect(() => {
+    if (!pendingText || !tradeIntent) return;
+    aui.composer().setText(pendingText);
+    tradeIntent.consumeChatText();
+  }, [pendingText, tradeIntent, aui]);
+
+  return null;
+}
+
 export function Thread() {
   return (
     <ThreadPrimitive.Root
@@ -288,6 +303,7 @@ export function Thread() {
       }}
     >
       <TradeIntentConsumer />
+      <ChatTextConsumer />
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         style={{
