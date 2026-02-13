@@ -1,0 +1,52 @@
+# CryptoQuant – Cursor rules
+
+## Project overview
+
+- **CryptoQuant** is a Binance USD-M trading dashboard with an AI Trading Chat.
+- **Backend:** Flask app in `scripts/backend_server.py`; serves REST/SSE APIs, runs crawlers and Binance User Data WebSocket.
+- **Frontend:** React + Vite + MUI + TypeScript in `frontend/`; positions table, market data table, right-side resizable chat panel.
+- **Data:** CSVs under `data/binance/` (positions, market_data, orders, funding). Env and paths from `scripts/env_manager.py` (or project root `.env` / `.env.local`).
+
+## Python
+
+- Use **Python 3.9+**; avoid 3.10+‑only syntax (e.g. prefer `typing.Optional`, `Union` over `X | Y` if 3.9 compat is required).
+- Run from project root with venv activated: `pip install -r requirements.txt`, then `python scripts/backend_server.py`.
+- Imports: scripts assume project root or `scripts` on `PYTHONPATH`; they `import env_manager` and often `import` other scripts from `scripts/`.
+- Backend env: `BACKEND_PORT`, `RUN_FETCH_LOOPS`, `ANTHROPIC_API_KEY`, `BINANCE_*`, `COINGLASS_*`, etc. See `env_manager.py`.
+
+## Frontend
+
+- **Stack:** React 18, Vite, MUI, TypeScript. No assistant-ui UI primitives (only AuiProvider if present); chat is custom MUI + SSE.
+- **Entry:** `frontend/src/main.tsx` → `App.tsx`. Chat panel: `frontend/src/components/ChatPanelV2.tsx`.
+- **API base:** Relative `/api/*`; Vite proxy in `frontend/vite.config.ts` to backend (e.g. `127.0.0.1:8000`).
+- **Run:** `cd frontend && npm run dev` (dev), `npm run build` (production build). Backend serves `frontend/dist` when built.
+
+## Binance / trading
+
+- **Order execution:** CSV format `currency,size_usdt,direct,lever`; execution via `scripts/binance_trade_api.py` (batch). Backend writes `data/binance/orders/ui_orders.csv` and runs the script.
+- **Order status:** `data/binance/orders/order_status_audit.csv`; real-time updates via `scripts/binance_order_status_ws.py` (WebSocket), started by backend when `RUN_FETCH_LOOPS` is true.
+- **Positions/summary:** From `data/binance/positions.csv` and `data/binance/summary.csv`, updated by backend crawlers and on execution success / WebSocket order updates.
+
+## binance-mcp
+
+- Subproject in `binance-mcp/`: TypeScript MCP server for Binance-related tools.
+- **Do not** add `@binance/connector-typescript` (not published on npm). Use `@binance/spot` (or other official Binance packages) and inline string literals / `as any` for enums if needed.
+- Config: `binance-mcp/src/config/client.ts` (e.g. `BASE_URL` for demo/testnet). Env in `binance-mcp/.env`.
+
+## Conventions
+
+- Prefer existing patterns: e.g. backend uses `_read_*` helpers and path constants from `env_manager`; frontend uses MUI `Box`, `Typography`, `Button`, etc.
+- When adding APIs, keep REST and SSE under `/api/*`; avoid breaking existing `/api/chat`, `/api/chat/stream`, `/api/positions`, `/api/summary`, `/api/market-data`, etc.
+- Chat: session id for server-side memory; execution triggers positions refresh via `onExecuteComplete` → `fetchData()` in App.
+
+## assistant-ui
+
+This project uses assistant-ui for chat interfaces.
+
+Documentation: https://www.assistant-ui.com/llms-full.txt
+
+Key patterns:
+- Use AssistantRuntimeProvider at the app root
+- Thread component for full chat interface
+- AssistantModal for floating chat widget
+- useChatRuntime hook with AI SDK transport
