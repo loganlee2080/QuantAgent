@@ -704,7 +704,16 @@ def place_orders_from_rows(
             leverage = ORDER_DEFAULTS["leverage"]
 
         quantity_precision = None
-        symbol = resolve_symbol(currency + "USDT")
+        # Normalize user currency to a Binance futures symbol:
+        # - If the user already provided a symbol ending with USDT (e.g. ALPACAUSDT),
+        #   keep it as-is.
+        # - Otherwise, append USDT (e.g. ALPACA -> ALPACAUSDT).
+        cur_upper = currency.strip().upper()
+        if cur_upper.endswith("USDT"):
+            symbol_input = cur_upper
+        else:
+            symbol_input = cur_upper + "USDT"
+        symbol = resolve_symbol(symbol_input)
 
         try:
             d = direct.strip().lower()

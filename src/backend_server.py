@@ -84,6 +84,7 @@ UI_ORDERS_PATH = DATA_BINANCE / "orders" / "ui_orders.csv"
 ORDER_CLOSE_TEMPLATE_PATH = DATA_BINANCE / "orders" / "order_close_template.csv"
 ORDER_TEMPLATE_PATH = DATA_BINANCE / "orders" / "order_template.csv"
 AI_SUGGESTIONS_PATH = DATA_BINANCE / "orders" / "ai_suggestions.jsonl"
+PENDING_ORDERS_PATH = DATA_BINANCE / "orders" / "pending_orders.json"
 ORDER_HISTORY_PATH = DATA_BINANCE / "orders" / "order_history.csv"
 BINANCE_ORDER_HISTORY_CSV = DATA_BINANCE / "orders" / "binance-order-history.csv"
 ORDER_STATUS_AUDIT_PATH = DATA_BINANCE / "orders" / "order_status_audit.csv"
@@ -1163,6 +1164,73 @@ def create_app() -> Flask:
         except json.JSONDecodeError:
             return None
 
+    # ── Session-scoped pending orders (contextual execution plans) ──────────────
+
+    def _load_all_pending_orders() -> dict:
+        """Load JSON mapping session_id -> pending orders record."""
+        if not PENDING_ORDERS_PATH.exists():
+            return {}
+        try:
+            with open(PENDING_ORDERS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            # Corrupt or unreadable file; ignore and start fresh.
+            return {}
+        return {}
+
+    def _save_all_pending_orders(data: dict) -> None:
+        """Persist JSON mapping session_id -> pending orders record."""
+        PENDING_ORDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = PENDING_ORDERS_PATH.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        tmp_path.replace(PENDING_ORDERS_PATH)
+
+    def _set_pending_orders_for_session(
+        session_id: Optional[str],
+        rows: list[dict],
+        csv_text: str,
+    ) -> None:
+        """
+        Store the latest pending orders for a chat session.
+
+        rows: normalized list of {"currency","size_usdt","direct","lever"} dicts.
+        csv_text: header+rows CSV block (without ORDERS_CSV_* markers).
+        """
+        if not session_id:
+            return
+        if not rows:
+            return
+        all_data = _load_all_pending_orders()
+        all_data[session_id] = {"rows": rows, "csv": csv_text}
+        _save_all_pending_orders(all_data)
+
+    def _get_pending_orders_for_session(session_id: Optional[str]) -> Optional[dict]:
+        """Return pending orders record for a session, or None."""
+        if not session_id:
+            return None
+        all_data = _load_all_pending_orders()
+        rec = all_data.get(session_id)
+        if not isinstance(rec, dict):
+            return None
+        rows = rec.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return None
+        return rec
+
+    def _clear_pending_orders_for_session(session_id: Optional[str]) -> None:
+        """Remove any pending orders record for the given session."""
+        if not session_id:
+            return
+        if not PENDING_ORDERS_PATH.exists():
+            return
+        data = _load_all_pending_orders()
+        if session_id in data:
+            data.pop(session_id, None)
+            _save_all_pending_orders(data)
+
     ORDERS_FIELDNAMES = ["currency", "size_usdt", "direct", "lever", "reduce_only"]
 
     def _append_orders(rows: List[OrderRow]) -> None:
@@ -1630,17 +1698,18 @@ def create_app() -> Flask:
         # Ensure header present; if AI omitted it, we can't safely parse, so return raw block.
         return "\n".join(lines)
 
-    def _append_orders_csv_to_ui(csv_block: str) -> int:
+    def _parse_orders_csv_block_to_rows(csv_block: str) -> list[dict]:
         """
-        Append parsed CSV rows from a block (without ORDERS_CSV_* markers) to ui_orders.csv.
-        Converts direct 'Close' to SELL/BUY from positions. Also writes audit file order_YYYYMMDD_HHMMss.csv.
-        Returns number of rows written.
+        Parse an orders CSV block (without ORDERS_CSV_* markers) into normalized row dicts.
+
+        Each returned row has keys: currency (upper), size_usdt (string), direct, lever.
+        Invalid / incomplete rows are skipped.
         """
         lines = [ln for ln in csv_block.splitlines() if ln and not ln.lstrip().startswith("#")]
         if not lines:
-            return 0
+            return []
         reader = csv.DictReader(lines)
-        batch = []
+        batch: list[dict] = []
         for row in reader:
             out = {
                 "currency": (row.get("currency") or "").strip().upper(),
@@ -1651,6 +1720,31 @@ def create_app() -> Flask:
             if not out["currency"] or not out["size_usdt"] or not out["direct"]:
                 continue
             batch.append(out)
+        return batch
+
+    def _rows_to_orders_csv_text(rows: list[dict]) -> str:
+        """
+        Convert normalized row dicts into a header+rows CSV string (no ORDERS_CSV markers).
+        """
+        header = ["currency", "size_usdt", "direct", "lever"]
+        if not rows:
+            return ",".join(header)
+        lines: list[str] = [",".join(header)]
+        for r in rows:
+            cur = (r.get("currency") or "").strip().upper()
+            size = str(r.get("size_usdt") or "").strip()
+            direct = (r.get("direct") or "").strip()
+            lever = (r.get("lever") or "").strip()
+            lines.append(",".join([cur, size, direct, lever]))
+        return "\n".join(lines)
+
+    def _append_orders_csv_to_ui(csv_block: str) -> int:
+        """
+        Append parsed CSV rows from a block (without ORDERS_CSV_* markers) to ui_orders.csv.
+        Converts direct 'Close' to SELL/BUY from positions. Also writes audit file order_YYYYMMDD_HHMMss.csv.
+        Returns number of rows written.
+        """
+        batch = _parse_orders_csv_block_to_rows(csv_block)
         if not batch:
             return 0
         resolved = _resolve_direct_for_orders(batch, currency_key="currency")
@@ -2936,22 +3030,29 @@ def create_app() -> Flask:
 
         # 1) Command path: e.g. apply last suggestion / execute / clear
         if mode in {"apply_last"} or _is_apply_last_suggestion_command(message):
-            last = _read_last_ai_suggestion()
-            if not last:
-                return {"reply": "No previous AI suggestion found to apply."}, 200
-            orders_block = last.get("orders_csv") or ""
+            pending = _get_pending_orders_for_session(session_id)
+            if not pending:
+                return {
+                    "reply": "No pending orders found for this chat session. Ask for a suggestion first."
+                }, 200
+            orders_block = pending.get("csv") or ""
+            if not orders_block:
+                # Rebuild CSV from stored rows if needed.
+                rows = pending.get("rows") or []
+                if rows:
+                    orders_block = _rows_to_orders_csv_text(rows)
             if not orders_block:
                 return {
-                    "reply": "Last suggestion did not include any ORDERS CSV block; nothing to apply."
+                    "reply": "Pending orders for this session do not include a valid ORDERS CSV block; nothing to apply."
                 }, 200
             try:
                 rows_written = _append_orders_csv_to_ui(orders_block)
             except Exception as e:
-                sys.stderr.write("[backend_server] Error applying last suggestion to ui_orders.csv:\n")
+                sys.stderr.write("[backend_server] Error applying pending orders to ui_orders.csv:\n")
                 traceback.print_exc()
-                return {"reply": f"Failed to apply last suggestion: {e}"}, 200
+                return {"reply": f"Failed to apply pending orders: {e}"}, 200
             return {
-                "reply": f"Applied last suggestion: wrote {rows_written} orders to {UI_ORDERS_PATH.name}. "
+                "reply": f"Applied pending orders: wrote {rows_written} rows to {UI_ORDERS_PATH.name}. "
                 "Review the CSV before executing trades.",
             }, 200
 
@@ -2966,25 +3067,43 @@ def create_app() -> Flask:
                 required_fields = {"currency", "size_usdt", "direct"}
                 if not required_fields.issubset(set(reader.fieldnames or [])):
                     csv_content = None
-            # If message is not valid CSV (e.g. assistant replied with a question), use last suggestion's orders
-            if not csv_content or not lines:
-                last = _read_last_ai_suggestion()
-                orders_block = (last or {}).get("orders_csv") or ""
-                if orders_block:
-                    lines = [
-                        ln
-                        for ln in orders_block.splitlines()
-                        if ln.strip() and not ln.lstrip().startswith("#")
-                    ]
-                    csv_content = orders_block
-            if not lines:
-                return {"reply": "Execute failed: no CSV content provided."}, 200
+            # If message is not valid CSV (e.g. user says "execute them" without pasting a table),
+            # fall back to session-scoped pending orders and return a preview-only plan for confirmation.
+            if csv_content is None:
+                pending = _get_pending_orders_for_session(session_id)
+                if not pending:
+                    return {
+                        "reply": "Execute failed: no CSV content provided and no pending orders remembered for this chat session. "
+                        "Ask for an order suggestion first, review it, then confirm execution.",
+                    }, 200
+                rows_out = pending.get("rows") or []
+                if not rows_out:
+                    return {
+                        "reply": "Execute failed: pending orders for this session are empty. Ask for a new suggestion first.",
+                    }, 200
+                csv_preview = _rows_to_orders_csv_text(rows_out)
+                preview_reply = (
+                    "Here is the current pending order plan based on our discussion.\n\n"
+                    "Review and confirm by clicking **Execute these orders** in the orders table, "
+                    "or adjust the suggested orders before executing.\n\n"
+                    "ORDERS_CSV_START\n"
+                    f"{csv_preview}\n"
+                    "ORDERS_CSV_END"
+                )
+                return {
+                    "reply": preview_reply,
+                    "executed": False,
+                    "success": False,
+                    "num_orders": len(rows_out),
+                }, 200
+
+            # At this point we have explicit CSV content from the user (confirmed execute).
             reader = csv.DictReader(lines)
             required_fields = {"currency", "size_usdt", "direct"}
             if not required_fields.issubset(set(reader.fieldnames or [])):
                 return {
                     "reply": "Execute failed: CSV must include header currency, size_usdt, direct (lever optional). "
-                    "Ask for a concrete order suggestion first, then click Execute orders."
+                    "Ask for a concrete order suggestion first, then click Execute orders.",
                 }, 200
             rows_out: list[dict] = []
             for row in reader:
@@ -3039,6 +3158,7 @@ def create_app() -> Flask:
                     stderr=str(e),
                     input_csv=input_csv_text,
                 )
+                _clear_pending_orders_for_session(session_id)
                 reply = _format_execution_reply(
                     success=False,
                     num_orders=len(rows_out),
@@ -3047,7 +3167,12 @@ def create_app() -> Flask:
                     stderr=str(e),
                     error_title="Order execution failed",
                 )
-                return {"reply": reply, "executed": True, "success": False, "num_orders": len(rows_out)}, 200
+                return {
+                    "reply": reply,
+                    "executed": True,
+                    "success": False,
+                    "num_orders": len(rows_out),
+                }, 200
 
             _append_order_history_entry(
                 source="chat_execute",
@@ -3057,6 +3182,7 @@ def create_app() -> Flask:
                 stderr=out.get("stderr") or "",
                 input_csv=input_csv_text,
             )
+            _clear_pending_orders_for_session(session_id)
 
             if not out["success"]:
                 reply = _format_execution_reply(
@@ -3067,7 +3193,12 @@ def create_app() -> Flask:
                     stderr=out.get("stderr") or "",
                     error_title="One or more orders failed",
                 )
-                return {"reply": reply, "executed": True, "success": False, "num_orders": len(rows_out)}, 200
+                return {
+                    "reply": reply,
+                    "executed": True,
+                    "success": False,
+                    "num_orders": len(rows_out),
+                }, 200
 
             reply = _format_execution_reply(
                 success=True,
@@ -3077,7 +3208,12 @@ def create_app() -> Flask:
                 stderr=out.get("stderr") or "",
                 results=out.get("results"),
             )
-            return {"reply": reply, "executed": True, "success": True, "num_orders": len(rows_out)}, 200
+            return {
+                "reply": reply,
+                "executed": True,
+                "success": True,
+                "num_orders": len(rows_out),
+            }, 200
 
         # Infer chat vs suggest when not in a special command (so we can drop Chat/Suggest UI and use "auto")
         if mode not in {"execute", "apply_last"}:
@@ -3128,6 +3264,11 @@ def create_app() -> Flask:
                 temperature=0.2,
             )
             orders_block = _extract_orders_csv_block(reply)
+            if session_id and orders_block:
+                pending_rows = _parse_orders_csv_block_to_rows(orders_block)
+                if pending_rows:
+                    csv_text = _rows_to_orders_csv_text(pending_rows)
+                    _set_pending_orders_for_session(session_id, pending_rows, csv_text)
             _append_ai_suggestion(message, reply, orders_block)
             _append_history_message(session_id, message, reply)
             # Suggest: return orders in response for approve flow; do not write to ui_orders.csv (context-based).
@@ -3198,6 +3339,14 @@ def main() -> None:
     global _funding_market_data_thread, _funding_fee_history_thread
     port = BACKEND_PORT
     app = create_app()
+    # On startup, if market_data.csv is missing or empty, run a one-off refresh
+    # so the frontend has data immediately instead of waiting for the first loop.
+    try:
+        if (not MARKET_DATA_PATH.exists()) or MARKET_DATA_PATH.stat().st_size == 0:
+            sys.stderr.write("[backend_server] market_data.csv missing or empty on startup; running initial fetch...\n")
+            _fetch_and_write_market_data()
+    except Exception:
+        traceback.print_exc()
     if RUN_FETCH_LOOPS:
         # Auto-start positions crawler (updates data/binance/positions.csv every CRAWL_POSITIONS_INTERVAL_SECONDS)
         if _positions_crawler_thread is None or not _positions_crawler_thread.is_alive():
