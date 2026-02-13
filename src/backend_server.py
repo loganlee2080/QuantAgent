@@ -3323,7 +3323,8 @@ def create_app() -> Flask:
         if path.startswith("api/"):
             return {"error": "Not found"}, 404
         if not FRONTEND_DIST.exists():
-            return {"error": "Frontend not built. Run: cd frontend && npm run build"}, 503
+            # Return 200 so Railway/health checks succeed when only backend is deployed.
+            return {"status": "ok", "message": "Backend running. Build frontend (cd frontend && npm run build) for UI."}, 200
         if path:
             file_path = FRONTEND_DIST / path
             if file_path.is_file():
@@ -3339,14 +3340,21 @@ def main() -> None:
     global _funding_market_data_thread, _funding_fee_history_thread
     port = BACKEND_PORT
     app = create_app()
-    # On startup, if market_data.csv is missing or empty, run a one-off refresh
-    # so the frontend has data immediately instead of waiting for the first loop.
-    try:
-        if (not MARKET_DATA_PATH.exists()) or MARKET_DATA_PATH.stat().st_size == 0:
-            sys.stderr.write("[backend_server] market_data.csv missing or empty on startup; running initial fetch...\n")
-            _fetch_and_write_market_data()
-    except Exception:
-        traceback.print_exc()
+    # On startup, if market_data.csv is missing or empty, run a one-off refresh in a background
+    # thread so the server binds immediately (avoids Railway/health-check timeout).
+    def _maybe_fetch_market_data_on_start() -> None:
+        try:
+            if (not MARKET_DATA_PATH.exists()) or MARKET_DATA_PATH.stat().st_size == 0:
+                sys.stderr.write("[backend_server] market_data.csv missing or empty on startup; running initial fetch in background...\n")
+                _fetch_and_write_market_data()
+        except Exception:
+            traceback.print_exc()
+
+    _init_market_data_thread = threading.Thread(
+        target=_maybe_fetch_market_data_on_start, name="init_market_data", daemon=True
+    )
+    _init_market_data_thread.start()
+
     if RUN_FETCH_LOOPS:
         # Auto-start positions crawler (updates data/binance/positions.csv every CRAWL_POSITIONS_INTERVAL_SECONDS)
         if _positions_crawler_thread is None or not _positions_crawler_thread.is_alive():
