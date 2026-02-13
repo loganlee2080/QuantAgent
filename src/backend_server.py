@@ -3232,7 +3232,8 @@ def create_app() -> Flask:
     return app
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for console script and Vercel deploy (run server)."""
     port = BACKEND_PORT
     app = create_app()
     if RUN_FETCH_LOOPS:
@@ -3304,4 +3305,8 @@ if __name__ == "__main__":
     else:
         sys.stderr.write("[backend_server] RUN_FETCH_LOOPS=false: positions/market/order/funding fetch loops and order-status WebSocket are disabled.\n")
     app.run(host="127.0.0.1", port=port, debug=True)
+
+
+if __name__ == "__main__":
+    main()
 
