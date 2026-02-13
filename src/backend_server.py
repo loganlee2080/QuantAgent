@@ -1035,7 +1035,18 @@ def create_app() -> Flask:
 
     def _read_market_data() -> List[dict]:
         """Return market_data.csv rows (all Binance USD-M perpetuals). No labels; merge from backup file in API."""
-        if not MARKET_DATA_PATH.exists():
+        if not MARKET_DATA_PATH.exists() or MARKET_DATA_PATH.stat().st_size == 0:
+            # If market data is missing/empty at request time, trigger a background refresh
+            # so future calls see data, but do not block this request.
+            def _maybe_fetch_in_background() -> None:
+                try:
+                    _fetch_and_write_market_data()
+                except Exception:
+                    traceback.print_exc()
+
+            threading.Thread(
+                target=_maybe_fetch_in_background, name="on_demand_market_data", daemon=True
+            ).start()
             return []
         with open(MARKET_DATA_PATH, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
