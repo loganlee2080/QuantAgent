@@ -32,6 +32,47 @@ python3 scripts/crawl_binance_usdm_positions.py
 
 Or use the venv above so one Python is used for both install and run.
 
+## Local dev environment
+
+One-time setup:
+
+1. **Python backend**
+   ```bash
+   cd /path/to/CryptoQuant
+   python3 -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+   Run from project root with venv activated so `scripts` can import `env_manager`.
+
+2. **Env (optional)**  
+   Copy [.env.example](.env.example) to `.env` or `.env.local` and set `BINANCE_API_KEY` / `BINANCE_API_SECRET` if you want live positions. For UI-only dev you can leave them empty; use `RUN_FETCH_LOOPS=false` to avoid background crawlers.
+
+3. **Data dirs**  
+   `data/binance/` and subdirs (`orders/`, `funding/`, `backup/`, `chat_sessions/`) are created by the backend when needed. You can also run `mkdir -p data/binance/orders data/binance/funding data/binance/backup data/binance/chat_sessions` once.
+
+4. **Frontend**
+   ```bash
+   cd frontend && npm install
+   ```
+
+Run for development:
+
+- **Terminal 1 – backend** (from project root, venv activated):
+  ```bash
+  python scripts/backend_server.py
+  ```
+  Serves API at `http://127.0.0.1:8000` (or `BACKEND_PORT`).
+
+- **Terminal 2 – frontend**
+  ```bash
+  cd frontend && npm run dev
+  ```
+  Opens at `http://127.0.0.1:5173` and proxies `/api` to the backend.
+
+To run without any background fetch loops (no Binance/Coinglass calls):  
+`RUN_FETCH_LOOPS=false python scripts/backend_server.py`
+
 ## Command cheat sheet
 
 ### Backend / data loops
