@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -3349,7 +3350,9 @@ def main() -> None:
     """Entry point for console script and Vercel deploy (run server)."""
     global _positions_crawler_thread, _funding_estimate_thread, _market_data_thread
     global _funding_market_data_thread, _funding_fee_history_thread
-    port = BACKEND_PORT
+    # Use PORT when set (e.g. Railway, Heroku); otherwise BACKEND_PORT from env
+    port = int(os.environ.get("PORT", BACKEND_PORT))
+    host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
     app = create_app()
     # On startup, if market_data.csv is missing or empty, run a one-off refresh in a background
     # thread so the server binds immediately (avoids Railway/health-check timeout).
@@ -3434,9 +3437,7 @@ def main() -> None:
             sys.stderr.write(f"[backend_server] Order status WebSocket not started (install websocket-client if needed): {e}\n")
     else:
         sys.stderr.write("[backend_server] RUN_FETCH_LOOPS=false: positions/market/order/funding fetch loops and order-status WebSocket are disabled.\n")
-    # Bind to 0.0.0.0 so platforms like Railway can reach the container.
-    # Debug mode can be controlled via FLASK_DEBUG or similar env; default to False for deploys.
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host=host, port=port, debug=not os.environ.get("PORT"))
 
 
 if __name__ == "__main__":
