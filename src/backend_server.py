@@ -46,10 +46,13 @@ try:
 except ImportError:  # pragma: no cover
     Anthropic = None  # type: ignore[assignment]
 
-# Optional: LangChain-based server-side chat memory
+# Optional: LangChain-based server-side chat memory (session history in data/binance/chat_sessions/)
 try:
-    from langchain.memory import FileChatMessageHistory
     from langchain_core.messages import HumanMessage, AIMessage
+    try:
+        from langchain_community.chat_message_histories import FileChatMessageHistory
+    except Exception:
+        from langchain.memory import FileChatMessageHistory  # type: ignore[assignment]
 except Exception:  # pragma: no cover - optional dependency
     FileChatMessageHistory = None  # type: ignore[assignment]
     HumanMessage = None  # type: ignore[assignment]
@@ -1460,21 +1463,32 @@ def create_app() -> Flask:
 
     def _append_history_message(session_id: str | None, user_message: str, ai_reply: str) -> None:
         """Persist a single user/assistant turn into LangChain chat history (if available)."""
-        if (
-            not session_id
-            or FileChatMessageHistory is None
-            or HumanMessage is None
-            or AIMessage is None
-        ):
+        if not session_id or not session_id.strip():
+            sys.stderr.write(
+                "[backend_server] chat session not saved: session_id is empty (frontend should send session_id in request body).\n"
+            )
+            return
+        if FileChatMessageHistory is None or HumanMessage is None or AIMessage is None:
+            sys.stderr.write(
+                "[backend_server] chat session not saved: LangChain chat history unavailable. "
+                "Install langchain-community: pip install langchain-community\n"
+            )
             return
         history = _get_chat_history(session_id)
         if history is None:
+            path = (DATA_BINANCE / "chat_sessions" / f"{session_id}.json").resolve()
+            sys.stderr.write(
+                f"[backend_server] chat session not saved: could not open history for session_id={session_id!r} (path={path}).\n"
+            )
             return
         try:
             history.add_message(HumanMessage(content=user_message))
             history.add_message(AIMessage(content=ai_reply))
         except Exception:
             # Never let memory issues break chat
+            sys.stderr.write(
+                f"[backend_server] chat session write failed for session_id={session_id!r}:\n"
+            )
             traceback.print_exc()
 
     def _render_history_for_prompt(session_id: str | None, max_turns: int = 10) -> str:
@@ -1498,17 +1512,85 @@ def create_app() -> Flask:
         lines: list[str] = []
         lines.append("Conversation history (most recent last):")
         for m in messages:
-            role = getattr(m, "type", "") or getattr(m, "role", "")
+            role = (getattr(m, "type", "") or getattr(m, "role", "") or "").lower()
             if role == "human":
                 prefix = "User"
             elif role == "ai":
                 prefix = "Assistant"
             else:
-                prefix = role or "Message"
+                prefix = getattr(m, "type", None) or getattr(m, "role", None) or "Message"
             content = getattr(m, "content", "") or ""
             lines.append(f"{prefix}: {content}")
         lines.append("")  # trailing blank line
         return "\n".join(lines)
+
+    def _get_session_context(session_id: str | None) -> dict:
+        """Return session context for QA: has_history, message_count. Used to verify context is persisted."""
+        out = {"session_id": session_id, "has_history": False, "message_count": 0}
+        if not session_id or FileChatMessageHistory is None:
+            return out
+        history = _get_chat_history(session_id)
+        if history is None:
+            return out
+        try:
+            n = len(history.messages)
+            out["has_history"] = n > 0
+            out["message_count"] = n
+        except Exception:
+            pass
+        return out
+
+    def _get_last_assistant_message(session_id: str | None) -> str | None:
+        """Return the content of the most recent assistant message in this session, or None."""
+        if not session_id or FileChatMessageHistory is None:
+            return None
+        history = _get_chat_history(session_id)
+        if history is None:
+            return None
+        try:
+            messages = history.messages
+        except Exception:
+            return None
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            role = (getattr(m, "type", "") or getattr(m, "role", "") or "").lower()
+            if role == "ai":
+                return (getattr(m, "content", "") or "").strip() or None
+        return None
+
+    def _is_follow_up_symbol_reply(user_message: str, session_id: str | None) -> bool:
+        """
+        True if the user message looks like a short reply (e.g. currency/symbol) to a question
+        the assistant asked (e.g. "which currency?"). Used to infer suggest mode so we get CSV output.
+        """
+        msg = (user_message or "").strip()
+        if len(msg) > 40 or not msg:
+            return False
+        last_ai = _get_last_assistant_message(session_id)
+        if not last_ai:
+            return False
+        last_lower = last_ai.lower()
+        ask_phrases = (
+            "which currency",
+            "what currency",
+            "which symbol",
+            "what symbol",
+            "which coin",
+            "what coin",
+            "which pair",
+            "what pair",
+            "which asset",
+            "what asset",
+            "which one",
+            "which token",
+        )
+        if not any(p in last_lower for p in ask_phrases):
+            return False
+        # User reply is short and might be a symbol (e.g. BTC, ETH, SOL)
+        words = msg.split()
+        if len(words) <= 2 and any(c.isalpha() for c in msg):
+            return True
+        return False
 
     def _build_claude_prompt(user_message: str, mode: str = "chat") -> str:
         """Assemble context (positions, summary) into a single text prompt.
@@ -1581,6 +1663,13 @@ def create_app() -> Flask:
                 "If you recommend specific orders, you SHOULD also include a CSV block between "
                 "ORDERS_CSV_START and ORDERS_CSV_END in the format: currency,size_usdt,direct,lever."
             )
+            lines.append("")
+            lines.append(
+                "If the user is providing missing information you asked for (e.g. a currency, symbol, or size), "
+                "or is agreeing to a proposal you made (e.g. 'Yes', 'OK', 'sure' in reply to 'Would you like me to propose positions?'), "
+                "treat it as completing an order request and output the executable orders as a CSV block between "
+                "ORDERS_CSV_START and ORDERS_CSV_END so the user can execute them."
+            )
         return "\n".join(lines)
 
     def _build_claude_prompt_with_memory(
@@ -1590,12 +1679,17 @@ def create_app() -> Flask:
     ) -> str:
         """
         Extended Claude prompt that prepends recent chat history (from LangChain) before the main context.
+        When history is present, adds an explicit instruction so the model uses it for context.
         """
         history_block = _render_history_for_prompt(session_id)
         base_prompt = _build_claude_prompt(user_message, mode=mode)
         if not history_block:
             return base_prompt
-        return history_block + "\n" + base_prompt
+        context_instruction = (
+            "Use the conversation history above to maintain context. "
+            "The user's current message is in the 'User message' section below."
+        )
+        return history_block + "\n" + context_instruction + "\n\n" + base_prompt
 
     def _build_claude_prompt_for_order(user_prompt: str, symbols: list[str] | None = None) -> str:
         """
@@ -1686,11 +1780,13 @@ def create_app() -> Flask:
         return "\n".join(lines)
 
     def _debug_log_claude_prompt(source: str, prompt: str) -> None:
-        """Log the full prompt being sent to Claude (truncated for safety)."""
+        """Log the prompt sent to Claude. Full prompt only if DEBUG_CLAUDE_PROMPT=1."""
+        enabled = os.getenv("DEBUG_CLAUDE_PROMPT", "").strip().lower() in ("1", "true", "yes")
         max_len = 4000
         display = prompt if len(prompt) <= max_len else prompt[:max_len] + "... [truncated]"
-        sys.stderr.write(f"[backend_server] Claude prompt from {source}:\n{display}\n")
-        sys.stderr.write(f"prompt: {prompt}\n")
+        sys.stderr.write(f"[backend_server] Claude prompt from {source} (len={len(prompt)}):\n{display}\n")
+        if enabled:
+            sys.stderr.write(f"[backend_server] Full prompt:\n{prompt}\n")
 
     def _extract_orders_csv_block(text: str) -> Optional[str]:
         """Extract CSV lines between ORDERS_CSV_START and ORDERS_CSV_END, if present."""
@@ -1816,28 +1912,32 @@ def create_app() -> Flask:
             table += "\n\n" + err.split("\n")[0][:120]  # one line, truncated
         return table
 
+    def _is_short_affirmation_only(msg: str) -> bool:
+        """True if message is only a short affirmation (yes/ok/sure), not an explicit apply/execute phrase."""
+        m = msg.strip().lower()
+        return m in {"yes", "y", "ok", "okay", "sure", "confirm", "go ahead", "do it", "looks good", "sounds good"}
+
+    def _is_execute_confirmation(msg: str) -> bool:
+        """True if message is a clear confirmation to place orders (execute/yes/confirm)."""
+        m = msg.strip().lower()
+        return m in {
+            "execute", "yes", "y", "confirm", "go ahead", "do it",
+            "place orders", "place them", "place", "send", "submit",
+        }
+
     def _is_apply_last_suggestion_command(msg: str) -> bool:
         m = msg.strip().lower()
-        # Short confirmations like "yes" should act as
-        # "apply last suggestion" when there is a previous
-        # AI orders block, but still require an explicit
-        # Execute step before placing real trades.
-        return m in {
+        # Explicit apply/execute phrases always mean "apply last suggestion".
+        if m in {
             "apply last suggestion",
             "apply last",
             "execute last suggestion",
             "execute last",
-            "yes",
-            "y",
-            "ok",
-            "okay",
-            "sure",
-            "confirm",
-            "go ahead",
-            "do it",
-            "looks good",
-            "sounds good",
-        }
+        }:
+            return True
+        # Short confirmations (yes/ok/sure) are only treated as apply when we have pending orders
+        # (see chat handler); otherwise they go to Claude so "Yes" can mean "Yes, propose positions".
+        return _is_short_affirmation_only(msg)
 
     def _infer_chat_mode(message: str) -> str:
         """Infer 'suggest' vs 'chat' from user message for general use (no explicit mode UI).
@@ -3022,6 +3122,13 @@ def create_app() -> Flask:
             return {"error": str(e)}, 500
         return {"ok": True, "symbol": symbol, "leverage": leverage, "response": res}, 200
 
+    @app.get("/api/chat/session")
+    def chat_session() -> tuple[dict, int]:
+        """Return session context (has_history, message_count) for the given session_id. Use for QA to verify context."""
+        session_id = str(request.args.get("session_id") or "").strip() or None
+        ctx = _get_session_context(session_id)
+        return (ctx, 200)
+
     @app.post("/api/chat")
     def chat() -> tuple[dict, int]:
         data = request.get_json(silent=True) or {}
@@ -3041,8 +3148,17 @@ def create_app() -> Flask:
             return tool_result
 
         # 1) Command path: e.g. apply last suggestion / execute / clear
-        if mode in {"apply_last"} or _is_apply_last_suggestion_command(message):
-            pending = _get_pending_orders_for_session(session_id)
+        # Short affirmations ("yes"/"ok") with no pending orders → send to Claude so context is used
+        # (e.g. "Yes" in reply to "Would you like me to propose positions?" → LLM proposes SOL/DOGE).
+        is_apply_command = mode in {"apply_last"} or _is_apply_last_suggestion_command(message)
+        pending = _get_pending_orders_for_session(session_id) if is_apply_command else None
+        skip_apply_treat_as_chat = (
+            is_apply_command
+            and not pending
+            and _is_short_affirmation_only(message)
+            and mode != "apply_last"
+        )
+        if is_apply_command and not skip_apply_treat_as_chat:
             if not pending:
                 return {
                     "reply": "No pending orders found for this chat session. Ask for a suggestion first."
@@ -3064,12 +3180,24 @@ def create_app() -> Flask:
                 traceback.print_exc()
                 return {"reply": f"Failed to apply pending orders: {e}"}, 200
             return {
-                "reply": f"Applied pending orders: wrote {rows_written} rows to {UI_ORDERS_PATH.name}. "
-                "Review the CSV before executing trades.",
+                "reply": (
+                    f"Done. I've added {rows_written} order(s) to the queue. "
+                    "Reply **Execute** or **Yes** when you're ready to place these orders on the exchange."
+                ),
             }, 200
 
+        # Treat "Execute"/"Yes" in chat as execution when we have pending orders (so user can confirm in one message).
+        _pending_for_exec = _get_pending_orders_for_session(session_id)
+        if (
+            mode not in {"execute"}
+            and _is_execute_confirmation(message)
+            and _pending_for_exec
+            and (_pending_for_exec.get("rows") or [])
+        ):
+            mode = "execute"
+
         if mode in {"execute"}:
-            # Treat message as CSV content with header currency,size_usdt,direct,lever (context-based; no file dependency).
+            # Build rows_out and input_csv_text either from message CSV or from pending orders + confirmation.
             lines = [ln for ln in message.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
             csv_content = message
             if not lines:
@@ -3079,9 +3207,40 @@ def create_app() -> Flask:
                 required_fields = {"currency", "size_usdt", "direct"}
                 if not required_fields.issubset(set(reader.fieldnames or [])):
                     csv_content = None
-            # If message is not valid CSV (e.g. user says "execute them" without pasting a table),
-            # fall back to session-scoped pending orders and return a preview-only plan for confirmation.
-            if csv_content is None:
+
+            rows_out: list[dict] = []
+            input_csv_text = ""
+
+            if csv_content is not None:
+                # Explicit CSV in message: parse into rows_out.
+                reader = csv.DictReader(lines)
+                required_fields = {"currency", "size_usdt", "direct"}
+                if not required_fields.issubset(set(reader.fieldnames or [])):
+                    return {
+                        "reply": "Execute failed: CSV must include header currency, size_usdt, direct (lever optional). "
+                        "Ask for a concrete order suggestion first, then click Execute orders.",
+                    }, 200
+                for row in reader:
+                    cur = (row.get("currency") or "").strip().upper()
+                    size_str = (row.get("size_usdt") or "").strip()
+                    direct = (row.get("direct") or "").strip()
+                    lever = (row.get("lever") or "").strip()
+                    if not cur or not size_str or not direct:
+                        continue
+                    try:
+                        size_val = float(size_str)
+                    except ValueError:
+                        return {"reply": f"Execute failed: invalid size_usdt {size_str!r}."}, 200
+                    if size_val <= 0:
+                        return {"reply": f"Execute failed: size_usdt must be > 0, got {size_str!r}."}, 200
+                    rows_out.append(
+                        {"currency": cur, "size_usdt": f"{size_val}", "direct": direct, "lever": lever}
+                    )
+                if not rows_out:
+                    return {"reply": "Execute failed: no valid order rows in CSV."}, 200
+                input_csv_text = "\n".join(lines)
+            else:
+                # No CSV in message: use pending orders. If user confirmed (Execute/Yes), proceed to execute.
                 pending = _get_pending_orders_for_session(session_id)
                 if not pending:
                     return {
@@ -3093,56 +3252,25 @@ def create_app() -> Flask:
                     return {
                         "reply": "Execute failed: pending orders for this session are empty. Ask for a new suggestion first.",
                     }, 200
-                csv_preview = _rows_to_orders_csv_text(rows_out)
-                preview_reply = (
-                    "Here is the current pending order plan based on our discussion.\n\n"
-                    "Review and confirm by clicking **Execute these orders** in the orders table, "
-                    "or adjust the suggested orders before executing.\n\n"
-                    "ORDERS_CSV_START\n"
-                    f"{csv_preview}\n"
-                    "ORDERS_CSV_END"
-                )
-                return {
-                    "reply": preview_reply,
-                    "executed": False,
-                    "success": False,
-                    "num_orders": len(rows_out),
-                }, 200
+                if not _is_execute_confirmation(message):
+                    # Show preview and ask for confirmation.
+                    csv_preview = _rows_to_orders_csv_text(rows_out)
+                    preview_reply = (
+                        "Here is the current pending order plan based on our discussion.\n\n"
+                        "Reply **Execute** or **Yes** to place these orders on the exchange."
+                        "\n\nORDERS_CSV_START\n"
+                        f"{csv_preview}\n"
+                        "ORDERS_CSV_END"
+                    )
+                    return {
+                        "reply": preview_reply,
+                        "executed": False,
+                        "success": False,
+                        "num_orders": len(rows_out),
+                    }, 200
+                input_csv_text = _rows_to_orders_csv_text(rows_out)
 
-            # At this point we have explicit CSV content from the user (confirmed execute).
-            reader = csv.DictReader(lines)
-            required_fields = {"currency", "size_usdt", "direct"}
-            if not required_fields.issubset(set(reader.fieldnames or [])):
-                return {
-                    "reply": "Execute failed: CSV must include header currency, size_usdt, direct (lever optional). "
-                    "Ask for a concrete order suggestion first, then click Execute orders.",
-                }, 200
-            rows_out: list[dict] = []
-            for row in reader:
-                cur = (row.get("currency") or "").strip().upper()
-                size_str = (row.get("size_usdt") or "").strip()
-                direct = (row.get("direct") or "").strip()
-                lever = (row.get("lever") or "").strip()
-                if not cur or not size_str or not direct:
-                    continue
-                try:
-                    size_val = float(size_str)
-                except ValueError:
-                    return {"reply": f"Execute failed: invalid size_usdt {size_str!r}."}, 200
-                if size_val <= 0:
-                    return {"reply": f"Execute failed: size_usdt must be > 0, got {size_str!r}."}, 200
-                rows_out.append(
-                    {
-                        "currency": cur,
-                        "size_usdt": f"{size_val}",
-                        "direct": direct,
-                        "lever": lever,
-                    }
-                )
-            if not rows_out:
-                return {"reply": "Execute failed: no valid order rows in CSV."}, 200
-
-            # Resolve Close -> SELL/BUY from positions (Binance has no Close side), then overwrite ui_orders.csv and write audit
+            # Common path: resolve Close -> SELL/BUY, write ui_orders.csv, place orders.
             resolved_out = _resolve_direct_for_orders(rows_out, currency_key="currency")
             UI_ORDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(UI_ORDERS_PATH, "w", newline="") as f:
@@ -3151,8 +3279,6 @@ def create_app() -> Flask:
                 for row in resolved_out:
                     writer.writerow({k: row.get(k, "") for k in ORDERS_FIELDNAMES})
             _write_orders_audit_file(resolved_out, ORDERS_FIELDNAMES)
-
-            input_csv_text = "\n".join(lines)
 
             try:
                 sys.path.insert(0, str(ROOT))
@@ -3230,6 +3356,9 @@ def create_app() -> Flask:
         # Infer chat vs suggest when not in a special command (so we can drop Chat/Suggest UI and use "auto")
         if mode not in {"execute", "apply_last"}:
             mode = _infer_chat_mode(message)
+            # If user is replying with a symbol/currency after we asked for it, force suggest so we get CSV
+            if mode == "chat" and _is_follow_up_symbol_reply(message, session_id):
+                mode = "suggest"
 
         # 2) Normal / analyse / suggest chat path → Claude with full context
         claude_config = _read_claude_config()
@@ -3248,6 +3377,12 @@ def create_app() -> Flask:
             reply = f"(stub, no Claude) You said: {message}"
             _append_history_message(session_id, message, reply)
             return {"reply": reply}, 200
+
+        # Debug: log whether conversation history is available (helps diagnose "context lost")
+        ctx = _get_session_context(session_id)
+        sys.stderr.write(
+            f"[backend_server] chat context: session_id={session_id!r} has_history={ctx['has_history']} message_count={ctx['message_count']}\n"
+        )
 
         prompt = _build_claude_prompt_with_memory(message, mode=mode, session_id=session_id)
 
@@ -3342,6 +3477,18 @@ def create_app() -> Flask:
             if file_path.is_file():
                 return send_from_directory(str(FRONTEND_DIST), path)
         return send_from_directory(str(FRONTEND_DIST), "index.html")
+
+    # Startup: log whether chat session storage is available (so empty chat_sessions/ is explainable)
+    _chat_sessions_dir = (DATA_BINANCE / "chat_sessions").resolve()
+    if FileChatMessageHistory is None:
+        sys.stderr.write(
+            f"[backend_server] Chat session storage: disabled (LangChain chat history unavailable). "
+            f"Install: pip install langchain-community. Sessions will not be recorded under {_chat_sessions_dir}\n"
+        )
+    else:
+        sys.stderr.write(
+            f"[backend_server] Chat session storage: enabled at {_chat_sessions_dir}\n"
+        )
 
     return app
 
