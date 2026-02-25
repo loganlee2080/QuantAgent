@@ -1,6 +1,6 @@
 # CryptoQuant
 
-demo link: https://lees-macbook-pro.tail187a83.ts.net/
+demo link: https://quantagent-production-e06e.up.railway.app/
 
 **Python:** 3.9+ (tested on 3.9.19). Scripts avoid 3.10+ syntax (e.g. use `typing.Optional` / `Union` instead of `X | Y`).
 
