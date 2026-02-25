@@ -1918,11 +1918,13 @@ def create_app() -> Flask:
         return m in {"yes", "y", "ok", "okay", "sure", "confirm", "go ahead", "do it", "looks good", "sounds good"}
 
     def _is_execute_confirmation(msg: str) -> bool:
-        """True if message is a clear confirmation to place orders (execute/yes/confirm)."""
+        """True if message is a clear confirmation to place orders (execute/yes/confirm). Includes Chinese."""
         m = msg.strip().lower()
         return m in {
             "execute", "yes", "y", "confirm", "go ahead", "do it",
             "place orders", "place them", "place", "send", "submit",
+            # Chinese: 执行=execute, 确认=confirm, 好的=ok, 可以=can do/go ahead
+            "执行", "确认", "好的", "可以", "好", "下单", "提交",
         }
 
     def _is_apply_last_suggestion_command(msg: str) -> bool:
@@ -3396,7 +3398,8 @@ def create_app() -> Flask:
                 claude_config.get("model") or ANTHROPIC_MODEL
             )
         try:
-            max_tokens = 1500 if mode == "suggest" else 800
+            # Suggest mode needs room for analysis + ORDERS_CSV block; chat may have long explanations (e.g. 分析可以做空哪些币种).
+            max_tokens = 4096 if mode == "suggest" else 2048
             reply = _call_claude_with_tools(
                 client,
                 model=model,
