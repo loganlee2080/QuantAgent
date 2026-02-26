@@ -150,6 +150,30 @@ There are two kinds of funding-related history:
   ```
   Requires `BINANCE_API_KEY` and `BINANCE_API_SECRET` (or `BINANCE_UM_*`).
 
+### FDV / 流通市值 (market cap) on a new instance (e.g. Docker / remote)
+
+**FDV** (fully diluted valuation) and **流通市值** (circulating market cap) in `data/binance/market_data.csv` are computed from:
+
+- `data/binance/backup/market_supply.csv` (per-currency `circulating_supply`, `total_supply`)
+- × mark price on each market-data refresh (or filled on-the-fly by the API when the CSV has empty values).
+
+**Init at startup (no manual commands):**
+
+On deploy (including Docker), the backend does **not** run any supply script during `create_app()`, so the server binds immediately and health checks pass. A **background init thread** then:
+
+1. If `market_data.csv` is missing or empty → runs a one-off market-data fetch.
+2. If `market_supply.csv` is missing and `market_data.csv` exists → runs `scripts/fill_market_supply.py` (CoinGecko-backed; timeout 900s so it can finish).
+
+FDV/流通市值 then appear on the next market-data refresh or when the API fills them on-the-fly. No SSH or exec into the container is required.
+
+Ensure `data/binance/` and `data/binance/backup/` are writable (e.g. volume or ephemeral disk). If the supply script times out (e.g. rate limits), FDV/流通市值 will be partial until the next run or manual re-run.
+
+**Optional manual bootstrap** (e.g. local dev or one-off):
+
+- After `market_data.csv` exists, run once: `python scripts/fill_market_supply.py`
+- Optional refresh so the CSV has FDV/流通市值 written:  
+  `PYTHONPATH=./src python -c "from backend_server import _fetch_and_write_market_data; _fetch_and_write_market_data()"`
+
 # Frontend
 
 ## Summary

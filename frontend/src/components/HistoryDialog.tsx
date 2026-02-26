@@ -109,6 +109,17 @@ export const HistoryDialog: React.FC<HistoryDialogProps> = ({
     setLoading(true);
     if (mode === "orders") {
       loadOrders()
+        .then(async (json) => {
+          const list = Array.isArray(json?.orders) ? json.orders : [];
+          if (list.length === 0) {
+            try {
+              await fetch("/api/refresh-binance-order-history", { method: "POST" });
+              await loadOrders();
+            } catch {
+              // ignore refresh failure; user can click Refresh manually
+            }
+          }
+        })
         .catch((e) => setError(e instanceof Error ? e.message : "Failed to load order history"))
         .finally(() => setLoading(false));
     } else {
@@ -174,7 +185,7 @@ export const HistoryDialog: React.FC<HistoryDialogProps> = ({
             </Button>
             {orders.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
-                No order history yet. Ensure BINANCE_API_KEY/SECRET are set and run refresh, or open a position so symbols are queried.
+                {orderMessage || "No orders found for your account (queried symbols: open positions or BTC/ETH)."}
               </Typography>
             ) : (
               <TableContainer sx={{ maxHeight: 440 }}>

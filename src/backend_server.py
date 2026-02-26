@@ -2632,15 +2632,14 @@ def create_app() -> Flask:
         return rows, None
 
     def _write_binance_order_history_csv(rows: List[dict]) -> None:
-        """Write order history rows to BINANCE_ORDER_HISTORY_CSV."""
-        if not rows:
-            return
+        """Write order history rows to BINANCE_ORDER_HISTORY_CSV. Writes header even when rows is empty so the file exists after a successful fetch."""
         fieldnames = ["time", "orderId", "symbol", "orderType", "side", "price", "avgPrice", "executed", "amount", "triggerConditions", "status"]
         BINANCE_ORDER_HISTORY_CSV.parent.mkdir(parents=True, exist_ok=True)
         with open(BINANCE_ORDER_HISTORY_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            if rows:
+                writer.writerows(rows)
 
     def _read_binance_order_history_from_csv() -> List[dict]:
         """Read order history from BINANCE_ORDER_HISTORY_CSV. Returns [] if file missing."""
@@ -2657,7 +2656,7 @@ def create_app() -> Flask:
         while not _order_history_refresh_stop.is_set():
             try:
                 orders, hint = _fetch_binance_order_history()
-                if orders:
+                if hint is None:
                     _write_binance_order_history_csv(orders)
             except Exception as e:
                 sys.stderr.write(f"[backend_server] order history refresh: {e}\n")
@@ -2712,13 +2711,13 @@ def create_app() -> Flask:
         """Manually fetch Binance USD-M order history and write to CSV. Binance allOrders requires one symbol per request (no batch); we query symbols with open positions, sequential with delay."""
         try:
             orders, hint = _fetch_binance_order_history()
-            if orders:
+            if hint is None:
                 _write_binance_order_history_csv(orders)
             symbols = _order_history_symbols()
             out = {
                 "orders": len(orders),
                 "symbols_queried": len(symbols),
-                "refreshed": True,
+                "refreshed": hint is None,
                 "message": f"Fetched {len(orders)} orders for {len(symbols)} symbols (Binance allOrders is per-symbol only).",
             }
             if hint:
@@ -2734,8 +2733,11 @@ def create_app() -> Flask:
         try:
             orders = _read_binance_order_history_from_csv()
             out = {"orders": orders}
-            if not orders and not BINANCE_ORDER_HISTORY_CSV.exists():
-                out["message"] = "Order history is refreshing in background; ensure BINANCE_API_KEY/SECRET are set and try again in a few seconds."
+            if not orders:
+                if not BINANCE_ORDER_HISTORY_CSV.exists():
+                    out["message"] = "Order history not yet refreshed. Click Refresh from Binance or ensure BINANCE_API_KEY/SECRET are set and try again."
+                else:
+                    out["message"] = "No orders found for your account (queried symbols: open positions or BTC/ETH)."
             return out, 200
         except Exception as e:
             sys.stderr.write(f"[backend_server] binance-order-history: {e}\n")
@@ -3697,49 +3699,9 @@ def create_app() -> Flask:
             # Never let labels bootstrap failure break app startup.
             traceback.print_exc()
 
-    # Startup: ensure market supply file exists so FDV and 流通市值 can be computed on refresh.
-    if not MARKET_SUPPLY_PATH.exists():
-        try:
-            sys.stderr.write(
-                f"[backend_server] market supply file missing at {MARKET_SUPPLY_PATH}. "
-                "Attempting to bootstrap via scripts/fill_market_supply.py\n"
-            )
-            script_path = ROOT / "scripts" / "fill_market_supply.py"
-            if script_path.is_file():
-                try:
-                    proc = subprocess.run(
-                        [sys.executable, str(script_path)],
-                        cwd=str(ROOT),
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
-                except Exception:
-                    sys.stderr.write(
-                        "[backend_server] market supply bootstrap failed while running script.\n"
-                    )
-                    traceback.print_exc()
-                else:
-                    if proc.returncode != 0:
-                        sys.stderr.write(
-                            "[backend_server] market supply bootstrap failed: "
-                            f"exit_code={proc.returncode}, stderr={proc.stderr[:500]!r}\n"
-                        )
-                    elif not MARKET_SUPPLY_PATH.exists():
-                        sys.stderr.write(
-                            "[backend_server] market supply bootstrap script completed "
-                            "but supply file is still missing.\n"
-                        )
-                    else:
-                        sys.stderr.write(
-                            f"[backend_server] market supply bootstrap: created {MARKET_SUPPLY_PATH}\n"
-                        )
-            else:
-                sys.stderr.write(
-                    f"[backend_server] market supply bootstrap skipped: script not found at {script_path}\n"
-                )
-        except Exception:
-            traceback.print_exc()
+    # FDV / 流通市值 supply bootstrap is done in a background init thread after app starts
+    # (see _maybe_fetch_market_data_on_start) so startup is not blocked and Docker/remote
+    # deploy does not need manual commands.
 
     return app
 
@@ -3752,26 +3714,51 @@ def main() -> None:
     port = int(os.environ.get("PORT", BACKEND_PORT))
     host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
     app = create_app()
-    # On startup, if market_data.csv is missing or empty, run a one-off refresh in a background
-    # thread so the server binds immediately (avoids Railway/health-check timeout).
+    # On startup, in a background thread: ensure market_data.csv exists, then ensure
+    # market_supply.csv exists so FDV and 流通市值 can be computed. Server binds immediately
+    # so Docker/health checks do not time out; no manual commands needed on deploy.
     def _maybe_fetch_market_data_on_start() -> None:
         try:
             if (not MARKET_DATA_PATH.exists()) or MARKET_DATA_PATH.stat().st_size == 0:
-                sys.stderr.write("[backend_server] market_data.csv missing or empty on startup; running initial fetch in background...\n")
+                sys.stderr.write(
+                    "[backend_server] market_data.csv missing or empty on startup; "
+                    "running initial fetch in background...\n"
+                )
                 _fetch_and_write_market_data()
             if not MARKET_SUPPLY_PATH.exists():
                 script_path = ROOT / "scripts" / "fill_market_supply.py"
                 if script_path.is_file() and MARKET_DATA_PATH.exists():
+                    sys.stderr.write(
+                        "[backend_server] market_supply.csv missing; running fill_market_supply.py "
+                        "in background to init FDV/流通市值...\n"
+                    )
                     try:
-                        subprocess.run(
+                        proc = subprocess.run(
                             [sys.executable, str(script_path)],
                             cwd=str(ROOT),
                             capture_output=True,
                             text=True,
-                            timeout=60,
+                            timeout=900,
                         )
-                    except Exception:
-                        pass
+                        if proc.returncode == 0 and MARKET_SUPPLY_PATH.exists():
+                            sys.stderr.write(
+                                f"[backend_server] FDV/流通市值 supply bootstrap done: {MARKET_SUPPLY_PATH}\n"
+                            )
+                        elif proc.returncode != 0:
+                            sys.stderr.write(
+                                f"[backend_server] fill_market_supply.py exited {proc.returncode}; "
+                                f"stderr: {(proc.stderr or '')[:300]!r}\n"
+                            )
+                    except subprocess.TimeoutExpired:
+                        sys.stderr.write(
+                            "[backend_server] fill_market_supply.py timed out (900s); "
+                            "FDV/流通市值 may be partial. Re-run script or retry later.\n"
+                        )
+                    except Exception as e:
+                        sys.stderr.write(
+                            f"[backend_server] fill_market_supply.py failed: {e}\n"
+                        )
+                        traceback.print_exc()
         except Exception:
             traceback.print_exc()
 
