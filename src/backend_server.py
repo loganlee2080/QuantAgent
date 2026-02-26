@@ -750,6 +750,8 @@ def _fetch_and_write_market_data() -> None:
     if not symbols:
         return
     # 1b) Spot exchangeInfo: set of symbols enabled for SPOT (e.g. BTCUSDT)
+    # Binance now returns permissions in permissionSets (nested arrays) and isSpotTradingAllowed;
+    # the legacy "permissions" array is often empty.
     spot_symbols: set = set()
     try:
         r_spot = requests.get(f"{BINANCE_SPOT_BASE}/api/v3/exchangeInfo", timeout=30)
@@ -759,9 +761,20 @@ def _fetch_and_write_market_data() -> None:
             sym = s.get("symbol")
             if not sym:
                 continue
-            perms = s.get("permissions") or []
-            if "SPOT" in perms and (s.get("status") or "").upper() == "TRADING":
+            if (s.get("status") or "").upper() != "TRADING":
+                continue
+            # Prefer isSpotTradingAllowed (boolean); fallback: SPOT in any permission set
+            if s.get("isSpotTradingAllowed") is True:
                 spot_symbols.add(str(sym))
+                continue
+            perms = s.get("permissions") or []
+            if "SPOT" in perms:
+                spot_symbols.add(str(sym))
+                continue
+            for perm_set in s.get("permissionSets") or []:
+                if "SPOT" in (perm_set if isinstance(perm_set, (list, tuple)) else []):
+                    spot_symbols.add(str(sym))
+                    break
         sys.stderr.write(f"[backend_server] Market data: spot exchangeInfo ok ({len(spot_symbols)} SPOT symbols)\n")
     except Exception as e:
         sys.stderr.write(f"[backend_server] Market data spot exchangeInfo: {e}\n")
@@ -1963,10 +1976,52 @@ def create_app() -> Flask:
         stderr: str,
         error_title: str | None = None,
         results: list | None = None,
+        rows: list | None = None,
     ) -> str:
-        """Format execution result: markdown with emoji summary and optional refresh prompt."""
+        """Format execution result: markdown table (currency, size_usdt, direct, lever, status, fail_reason) when rows+results provided; else legacy summary."""
+        FAIL_REASON_MAX = 80
+
+        def _direct_display(d: str) -> str:
+            d = (d or "").strip().upper()
+            if d in ("LONG", "BUY"):
+                return "Long"
+            if d in ("SHORT", "SELL"):
+                return "Short"
+            return d or "-"
+
+        def _order_table(rows_list: list, results_list: list) -> str:
+            lines_out = [
+                "| currency | size_usdt | direct | lever | status | fail_reason |",
+                "|----------|-----------|--------|-------|--------|-------------|",
+            ]
+            result_by_idx = list(results_list) if results_list else []
+            for i, row in enumerate(rows_list):
+                currency = (row.get("currency") or "").strip() or "-"
+                size_usdt = (row.get("size_usdt") or row.get("size") or "").strip() or "-"
+                direct = _direct_display(row.get("direct") or "")
+                lever = (row.get("lever") or "").strip() or "-"
+                if i < len(result_by_idx):
+                    res = result_by_idx[i]
+                else:
+                    res = next((r for r in result_by_idx if (r.get("currency") or "").strip().upper() == currency.upper()), {})
+                ok = res.get("ok", False)
+                status = "Success ✅" if ok else "Fail ❌"
+                err = res.get("error") or ""
+                fail_reason = "-" if ok else (err[:FAIL_REASON_MAX] + ("..." if len(err) > FAIL_REASON_MAX else ""))
+                lines_out.append(f"| {currency} | {size_usdt} | {direct} | {lever} | {status} | {fail_reason} |")
+            return "\n".join(lines_out)
+
+        if rows and results:
+            table = _order_table(rows, results)
+            if success:
+                lines_out = [f"✅ **Orders placed** ({len(rows)})\n", table, "", "🔄 **Refresh** to see your updated positions."]
+                return "\n".join(lines_out)
+            title = error_title or "One or more orders failed"
+            lines_out = [f"**{title}** (code {returncode})\n", table, "", "🔄 **Refresh** to see your updated positions."]
+            return "\n".join(lines_out)
+
         if success:
-            lines_out: list[str] = []
+            lines_out = []
             if results:
                 lines_out.append(f"✅ **Orders placed** ({len(results)})\n")
                 lines_out.append("| Symbol | Side | Order ID | Qty | Status |")
@@ -2326,6 +2381,25 @@ def create_app() -> Flask:
     def get_market_data() -> tuple[dict, int]:
         """Return market data table (currency, maxLeverage, markPrice, funding, volume, etc.) with labels from backup file."""
         rows = _read_market_data()
+        # Filter to symbols that are currently valid USDT futures per binance_trade_api.
+        # This keeps the table aligned with what the trading API actually supports.
+        if rows:
+            try:
+                import binance_trade_api as bta  # type: ignore[import]
+
+                try:
+                    valid_symbols = bta.get_valid_usdt_symbols()
+                except AttributeError:
+                    valid_symbols = None
+                if valid_symbols:
+                    rows = [
+                        row
+                        for row in rows
+                        if (row.get("currency") or "").strip().upper() in valid_symbols
+                    ]
+            except Exception:
+                # If anything goes wrong (import, network, etc.), fall back to unfiltered data.
+                pass
         labels_by_currency = _read_market_data_labels()
         supply_by_currency = _read_market_supply()
         circ_cap_key = "流通市值(USDT)"
@@ -3495,6 +3569,8 @@ def create_app() -> Flask:
                     stdout=out.get("stdout") or "",
                     stderr=out.get("stderr") or "",
                     error_title="One or more orders failed",
+                    results=out.get("results"),
+                    rows=resolved_out,
                 )
                 return {
                     "reply": reply,
@@ -3510,6 +3586,7 @@ def create_app() -> Flask:
                 stdout=out.get("stdout") or "",
                 stderr=out.get("stderr") or "",
                 results=out.get("results"),
+                rows=resolved_out,
             )
             return {
                 "reply": reply,

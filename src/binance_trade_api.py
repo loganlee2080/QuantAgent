@@ -132,6 +132,15 @@ def resolve_symbol(user_input: str) -> str:
     raise ValueError(f"Unknown or unsupported symbol: {user_input!r} (not in Binance USD-M futures)")
 
 
+def get_valid_usdt_symbols() -> set:
+    """Return the set of valid Binance USD-M futures symbols with quote=USDT and status=TRADING.
+
+    Uses the same exchangeInfo cache as resolve_symbol; safe to call repeatedly.
+    """
+    _load_exchange_symbols()
+    return set(_valid_usdt_symbols)
+
+
 def _fetch_quantity_precision(symbol: str) -> int:
     """Fetch quantityPrecision for a symbol from Binance exchangeInfo.
 
@@ -457,6 +466,114 @@ def close_position_limit(
     return data
 
 
+def _get_position_amt_and_leverage(
+    symbol: str,
+    api_key: str,
+    api_secret: str,
+) -> Tuple[float, Optional[int]]:
+    """
+    Helper: fetch /fapi/v2/positionRisk and return (positionAmt, leverage) for a symbol.
+
+    - positionAmt: positive/negative size; 0 means no open position.
+    - leverage: current initial leverage for that symbol, or None if missing/invalid.
+    """
+    _, positions = _signed_request(
+        api_key,
+        api_secret,
+        "GET",
+        "/fapi/v2/positionRisk",
+        {},
+    )
+    for p in positions:
+        if str(p.get("symbol")) != symbol:
+            continue
+        try:
+            amt = float(p.get("positionAmt", 0) or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        lev_raw = p.get("leverage", None)
+        lev: Optional[int]
+        try:
+            lev = int(lev_raw) if lev_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            lev = None
+        return amt, lev
+    return 0.0, None
+
+
+def _maybe_update_leverage(
+    symbol: str,
+    target_leverage: int,
+    api_key: str,
+    api_secret: str,
+) -> None:
+    """
+    Apply leverage-change rules for a single symbol:
+
+    - Default leverage is 2x (handled by callers via ORDER_DEFAULTS["leverage"]).
+    - If there is no open position, always set leverage to target_leverage.
+    - If there is an open position:
+        * If current leverage == target_leverage → no change.
+        * Otherwise → update leverage and log the change.
+
+    Any failures to read positionRisk or set leverage are logged, but do not
+    raise, so that order placement can still proceed with existing leverage.
+    """
+    log = _get_trade_logger()
+    has_position = False
+    current_lev: Optional[int] = None
+    try:
+        pos_amt, current_lev = _get_position_amt_and_leverage(symbol, api_key, api_secret)
+        has_position = abs(pos_amt) > 0
+    except Exception as exc:  # pragma: no cover - defensive
+        log.exception(
+            "Failed to fetch positionRisk for %s; attempting set_leverage(%sx) anyway: %s",
+            symbol,
+            target_leverage,
+            exc,
+        )
+        has_position = False  # fall back to previous behavior: just try to set leverage
+
+    # Decide whether we actually need to change leverage.
+    reason: Optional[str] = None
+    if not has_position:
+        reason = "no existing position"
+    elif current_lev is None:
+        reason = "unknown current leverage"
+    elif current_lev != target_leverage:
+        reason = f"current leverage {current_lev} != target {target_leverage}"
+
+    if reason is None:
+        # Either we have a position and leverage already matches, or we couldn't
+        # determine a reason to change; avoid redundant API calls.
+        if has_position and current_lev is not None:
+            msg = f"Leverage for {symbol} already {current_lev}x; no update needed."
+            print(msg)
+            log.info(msg)
+        return
+
+    msg = (
+        f"Updating leverage for {symbol}: "
+        f"current={current_lev if current_lev is not None else 'unknown'} → {target_leverage}x "
+        f"({reason})"
+    )
+    print(msg)
+    log.info(msg)
+
+    try:
+        print(f"Setting leverage for {symbol} to {target_leverage}x...")
+        set_leverage(symbol, target_leverage, api_key=api_key, api_secret=api_secret)
+    except RuntimeError as exc:
+        # Log but continue; order placement will use whatever leverage Binance currently has.
+        log.exception(
+            "set_leverage failed for %s (requested %sx; current=%s); placing order anyway: %s",
+            symbol,
+            target_leverage,
+            current_lev,
+            exc,
+        )
+
+
 def place_market_order(
     symbol: str,
     side: str,
@@ -479,9 +596,10 @@ def place_market_order(
     if api_key is None or api_secret is None:
         api_key, api_secret = _get_keys()
 
-    if leverage is not None:
-        print(f"Setting leverage for {symbol} to {leverage}x...")
-        set_leverage(symbol, leverage, api_key=api_key, api_secret=api_secret)
+    # Apply leverage rules if a target leverage is provided; otherwise use default 2x.
+    target_leverage: Optional[int] = leverage if leverage is not None else ORDER_DEFAULTS["leverage"]
+    if target_leverage is not None:
+        _maybe_update_leverage(symbol, int(target_leverage), api_key, api_secret)
 
     side = side.upper()
     if side not in ("BUY", "SELL"):
@@ -575,11 +693,17 @@ def place_batch_orders(
             sym = (o.get("symbol") or "").strip().upper()
             if not sym or not sym.endswith("USDT"):
                 sym = (sym or "") + "USDT"
-            if sym:
-                resolved = resolve_symbol(sym)
-                if resolved not in symbols_seen:
-                    symbols_seen.add(resolved)
-                    set_leverage(resolved, leverage, api_key=api_key, api_secret=api_secret)
+            if not sym:
+                continue
+            resolved = resolve_symbol(sym)
+            if resolved in symbols_seen:
+                continue
+            symbols_seen.add(resolved)
+            # Apply same leverage rules as individual orders:
+            # - if no position, set leverage;
+            # - if position exists with different leverage, update and log;
+            # - if position exists with same leverage, skip update.
+            _maybe_update_leverage(resolved, leverage, api_key, api_secret)
 
     BATCH_SIZE = 5
     all_responses: list = []
@@ -671,12 +795,15 @@ def place_orders_from_rows(
 
         if not currency or not size_str or not direct:
             stdout_lines.append(f"Skipping invalid row: {row}")
+            cur_label = (row.get("currency") or "").strip().upper() or "?"
+            results.append({"currency": cur_label, "ok": False, "response": None, "error": "Skipped: invalid row"})
             continue
 
         try:
             size_usdt = float(size_str)
         except ValueError:
             stdout_lines.append(f"Invalid size_usdt in row (skipping): {row}")
+            results.append({"currency": currency, "ok": False, "response": None, "error": "Skipped: invalid size_usdt"})
             continue
 
         max_size = ORDER_DEFAULTS["max_size_usdt"]
@@ -692,16 +819,18 @@ def place_orders_from_rows(
                 stdout_lines.append(
                     f"Size {size_usdt} below min_size_usdt {min_size} for {currency}; skipping row."
                 )
+                results.append({"currency": currency, "ok": False, "response": None, "error": "Skipped: size below min"})
                 continue
 
-        leverage = None
+        # Parse leverage: allow "2", "2x"; invalid or blank -> use default so we never pass None.
+        leverage = ORDER_DEFAULTS["leverage"]
         if lever_str:
-            try:
-                leverage = int(lever_str)
-            except ValueError:
-                stdout_lines.append(f"Invalid lever in row (skipping leverage change): {row}")
-        else:
-            leverage = ORDER_DEFAULTS["leverage"]
+            normalized = lever_str.rstrip("xX").strip()
+            if normalized:
+                try:
+                    leverage = int(normalized)
+                except ValueError:
+                    stdout_lines.append(f"Invalid lever in row (skipping leverage change): {row}")
 
         quantity_precision = None
         # Normalize user currency to a Binance futures symbol:
@@ -713,7 +842,15 @@ def place_orders_from_rows(
             symbol_input = cur_upper
         else:
             symbol_input = cur_upper + "USDT"
-        symbol = resolve_symbol(symbol_input)
+        try:
+            symbol = resolve_symbol(symbol_input)
+        except ValueError as e:
+            any_failed = True
+            err_str = str(e)
+            stdout_lines.append(f"Skipping unsupported symbol: {err_str}")
+            stderr_lines.append(f"Order SKIP for {currency}: {err_str}")
+            results.append({"currency": currency, "ok": False, "response": None, "error": err_str})
+            continue
 
         try:
             d = direct.strip().lower()
