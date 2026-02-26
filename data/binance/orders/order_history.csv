@@ -1,0 +1,95 @@
+timestamp,source,num_orders,returncode,stdout,stderr,input_csv
+2026-02-25T04:43:21.149147Z,chat_execute,2,0,"Order OK: {""orderId"": 12543274704, ""symbol"": ""BTCUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""0QvvJPEZO8SQntCbqXUuXz"", ""price"": ""0.00"", ""avgPrice"": ""0.00"", ""origQty"": ""0.007"", ""executedQty"": ""0.000"", ""cumQty"": ""0.000"", ""cumQuote"": ""0.00000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.00"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771994596695}
+Order OK: {""orderId"": 8427890740, ""symbol"": ""ETHUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""wuPZFoe0y0CKmNrunZjhSL"", ""price"": ""0.00"", ""avgPrice"": ""0.00"", ""origQty"": ""0.261"", ""executedQty"": ""0.000"", ""cumQty"": ""0.000"", ""cumQuote"": ""0.00000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.00"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771994601051}",,"currency,size_usdt,direct,lever
+BTC,500,Short,2
+ETH,500,Short,2"
+2026-02-25T05:13:34.738541Z,chat_execute,2,0,"Order OK: {""orderId"": 1731124627, ""symbol"": ""SOLUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""M4bdojgDxGG3sShqXwCXSG"", ""price"": ""0.0000"", ""avgPrice"": ""0.00"", ""origQty"": ""1.21"", ""executedQty"": ""0.00"", ""cumQty"": ""0.00"", ""cumQuote"": ""0.000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771996412365}
+Order OK: {""orderId"": 705924408, ""symbol"": ""DOGEUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""zKM4e1oV99bNpgSivDWY4s"", ""price"": ""0.000000"", ""avgPrice"": ""0.00"", ""origQty"": ""540"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771996414659}",,"currency,size_usdt,direct,lever
+SOL,100,SHORT,2
+DOGE,50,SHORT,2"
+2026-02-25T05:39:35.962939Z,chat_execute,2,0,"Order OK: {""orderId"": 95584647, ""symbol"": ""ARBUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""1QD11BeBeWvD3dfqjhc0wL"", ""price"": ""0.000000"", ""avgPrice"": ""0.00"", ""origQty"": ""1639.3"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771997973223}
+Order OK: {""orderId"": 137381594, ""symbol"": ""OPUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""FBn2AQ4sMnMewakfJnaOUY"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""856.8"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.00000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771997975871}",,"currency,size_usdt,direct,lever
+ARB,150,SHORT,2
+OP,100,SHORT,2"
+2026-02-25T05:57:06.602053Z,chat_execute,2,0,"Order OK (close): {""orderId"": 137386855, ""symbol"": ""OPUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""VCrrtA8OYv5aVE53MaJE1N"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""856.8"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.00000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": true, ""closePosition"": false, ""side"": ""BUY"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771999024783}
+Order OK (close): {""orderId"": 95593388, ""symbol"": ""ARBUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""rXkuFhWjPLdJCvXWQQzx8F"", ""price"": ""0.000000"", ""avgPrice"": ""0.00"", ""origQty"": ""1639.3"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": true, ""closePosition"": false, ""side"": ""BUY"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1771999026503}",,"currency,size_usdt,direct,lever
+OP,100,CLOSE,2
+ARB,75,CLOSE,2"
+2026-02-25T06:52:13.945467Z,chat_execute,18,-1,,Unknown or unsupported symbol: 'ENSOUSDT' (not in Binance USD-M futures),"currency,size_usdt,direct,lever
+BTCUSDT,1000,LONG,2
+ETHUSDT,1000,LONG,2
+HYPEUSDT,1000,LONG,2
+BCHUSDT,200,SHORT,2
+XRPUSDT,200,SHORT,2
+LINKUSDT,200,SHORT,2
+ADAUSDT,200,SHORT,2
+DOGEUSDT,200,SHORT,2
+SOLUSDT,200,SHORT,2
+AVAXUSDT,200,SHORT,2
+SUIUSDT,200,SHORT,2
+1000PEPEUSDT,200,SHORT,2
+PAXGUSDT,200,SHORT,2
+ENSOUSDT,200,SHORT,2
+RIVERUSDT,200,SHORT,2
+KITEUSDT,200,SHORT,2
+POWERUSDT,200,SHORT,2
+ESPUSDT,200,SHORT,2"
+2026-02-25T08:03:14.936890Z,chat_execute,30,1,"Order OK: {""orderId"": 333064824, ""symbol"": ""1000PEPEUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""81ri7C32DsulA5GYdKalHu"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""25493"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006521286}
+Order OK: {""orderId"": 113384064, ""symbol"": ""1000FLOKIUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""aItOH9k9TgzTM8TO6mUYZz"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""3513"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006523568}
+Order OK: {""orderId"": 95494633, ""symbol"": ""WIFUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""wGnQU4igT04b7qyCsT24YH"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""511.2"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.00000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006530761}
+Order OK: {""orderId"": 110762481, ""symbol"": ""WUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""ZpboNHvHFymPAfMCb1rXwg"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""5232.8"", ""executedQty"": ""0.0"", ""cumQty"": ""0.0"", ""cumQuote"": ""0.00000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006539205}
+Order OK: {""orderId"": 69923992, ""symbol"": ""MEWUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""0sSo2eSY2A1vyg6wRo03x8"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""170068"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006547700}
+Order OK: {""orderId"": 74536652, ""symbol"": ""POPCATUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""6gciqRvwC0Zu43CM6QM54c"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""2079"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006556195}
+Order OK: {""orderId"": 201790151, ""symbol"": ""DOGSUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""81ttCqfNRFvtpmq1uFe1K3"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""3745318"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006558586}
+Order OK: {""orderId"": 73929770, ""symbol"": ""GOATUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""5czM8bQCb8tWV91d0u7awH"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""5230"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006563048}
+Order OK: {""orderId"": 57085099, ""symbol"": ""MOODENGUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""IgkD7bSlMRpVeoEvfhy2PL"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""1948"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006566879}
+Order OK: {""orderId"": 48063176, ""symbol"": ""1000CHEEMSUSDT"", ""status"": ""NEW"", ""clientOrderId"": ""8jClk8RPSeJ099Pa3ReE1M"", ""price"": ""0.0000000"", ""avgPrice"": ""0.00"", ""origQty"": ""231588"", ""executedQty"": ""0"", ""cumQty"": ""0"", ""cumQuote"": ""0.0000000"", ""timeInForce"": ""GTC"", ""type"": ""MARKET"", ""reduceOnly"": false, ""closePosition"": false, ""side"": ""SELL"", ""positionSide"": ""BOTH"", ""stopPrice"": ""0.0000000"", ""workingType"": ""CONTRACT_PRICE"", ""priceProtect"": false, ""origType"": ""MARKET"", ""priceMatch"": ""NONE"", ""selfTradePreventionMode"": ""EXPIRE_MAKER"", ""goodTillDate"": 0, ""updateTime"": 1772006581325}","Order FAILED for 1000SHIBUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for PEOPLEUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for MEMEUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for 1000BONKUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for MYROUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for BOMEUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for NOTUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for TURBOUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for BANANAUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for BRETTUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for NEIROUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for 1000000MOGUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for BANUSDT: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+Order FAILED for SLERFUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for SPXUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for PENGUUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for FARTCOINUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for COOKIEUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for TRUMPUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}
+Order FAILED for MELANIAUSDT: Binance error 400: {'code': -1000, 'msg': 'An unknown error occurred while processing the request.'}","currency,size_usdt,direct,lever
+1000SHIBUSDT,100,SHORT,2
+PEOPLEUSDT,100,SHORT,2
+1000PEPEUSDT,100,SHORT,2
+1000FLOKIUSDT,100,SHORT,2
+MEMEUSDT,100,SHORT,2
+1000BONKUSDT,100,SHORT,2
+WIFUSDT,100,SHORT,2
+MYROUSDT,100,SHORT,2
+BOMEUSDT,100,SHORT,2
+WUSDT,100,SHORT,2
+NOTUSDT,100,SHORT,2
+TURBOUSDT,100,SHORT,2
+MEWUSDT,100,SHORT,2
+BANANAUSDT,100,SHORT,2
+BRETTUSDT,100,SHORT,2
+POPCATUSDT,100,SHORT,2
+DOGSUSDT,100,SHORT,2
+NEIROUSDT,100,SHORT,2
+GOATUSDT,100,SHORT,2
+MOODENGUSDT,100,SHORT,2
+1000000MOGUSDT,100,SHORT,2
+BANUSDT,100,SHORT,2
+SLERFUSDT,100,SHORT,2
+1000CHEEMSUSDT,100,SHORT,2
+SPXUSDT,100,SHORT,2
+PENGUUSDT,100,SHORT,2
+FARTCOINUSDT,100,SHORT,2
+COOKIEUSDT,100,SHORT,2
+TRUMPUSDT,100,SHORT,2
+MELANIAUSDT,100,SHORT,2"

@@ -4,5 +4,6 @@
 .venv/
 __pycache__/
 frontend/node_modules/
-data
+data/chat_sessions/
+data/orders/
 *.log

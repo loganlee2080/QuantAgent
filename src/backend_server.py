@@ -943,7 +943,8 @@ def _fetch_and_write_market_data() -> None:
 
 
 def _market_data_loop() -> None:
-    """Run market data fetch every MARKET_DATA_INTERVAL_SECONDS (default 5 min)."""
+    """Run market data fetch every MARKET_DATA_INTERVAL_SECONDS (default 5 min).
+    Uses existing market_data.csv when present and overwrites with fresh data each run (preserving fields when API returns empty)."""
     while not _market_data_stop.is_set():
         try:
             _fetch_and_write_market_data()
@@ -1083,7 +1084,8 @@ def create_app() -> Flask:
         return rows
 
     def _read_market_data() -> List[dict]:
-        """Return market_data.csv rows (all Binance USD-M perpetuals). No labels; merge from backup file in API."""
+        """Return market_data.csv rows (all Binance USD-M perpetuals). No labels; merge from backup file in API.
+        If the file already exists and is non-empty, we use it as-is; the periodic _market_data_loop updates it."""
         if not MARKET_DATA_PATH.exists() or MARKET_DATA_PATH.stat().st_size == 0:
             # If market data is missing/empty at request time, trigger a background refresh
             # so future calls see data, but do not block this request.
