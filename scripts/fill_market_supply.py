@@ -133,14 +133,72 @@ def _fetch_coingecko_symbol_map() -> Dict[str, list[str]]:
     return by_symbol
 
 
+# Canonical CoinGecko ids for major coins (symbol -> id). Multiple coins can share
+# a symbol (e.g. "btc" returns a wrapped token); we prefer the main asset.
+PREFERRED_COINGECKO_IDS: Dict[str, str] = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "BNB": "binancecoin",
+    "SOL": "solana",
+    "XRP": "ripple",
+    "ADA": "cardano",
+    "DOGE": "dogecoin",
+    "AVAX": "avalanche-2",
+    "DOT": "polkadot",
+    "LINK": "chainlink",
+    "MATIC": "matic-network",
+    "POL": "matic-network",
+    "LTC": "litecoin",
+    "BCH": "bitcoin-cash",
+    "UNI": "uniswap",
+    "ATOM": "cosmos",
+    "XLM": "stellar",
+    "ETC": "ethereum-classic",
+    "NEAR": "near",
+    "APT": "aptos",
+    "SUI": "sui",
+    "OP": "optimism",
+    "ARB": "arbitrum",
+    "INJ": "injective-protocol",
+    "TON": "the-open-network",
+    "STX": "blockstack",
+    "XMR": "monero",
+    "ZEC": "zcash",
+    "TRX": "tron",
+    "HBAR": "hedera-hashgraph",
+    "FIL": "filecoin",
+    "ICP": "internet-computer",
+    "VET": "vechain",
+    "ALGO": "algorand",
+    "FTM": "fantom",
+    "AAVE": "aave",
+    "MKR": "maker",
+    "CRV": "curve-dao-token",
+    "LDO": "lido-dao",
+    "RUNE": "thorchain",
+    "WLD": "worldcoin-wld",
+    "SEI": "sei-network",
+    "TIA": "celestia",
+    "JUP": "jupiter-exchange-solana",
+    "STRK": "starknet",
+    "ZK": "zksync",
+    "EIGEN": "eigenlayer",
+}
+
+
 def _choose_coingecko_id(symbol: str, ids: list[str]) -> str:
     """
     Heuristically pick the best CoinGecko id for a given symbol.
 
     Prefer:
+    - PREFERRED_COINGECKO_IDS[symbol] if present in ids (canonical main asset)
     - exact id == lowercased symbol
     - otherwise the first id in the list.
     """
+    sym_upper = (symbol or "").strip().upper()
+    preferred = PREFERRED_COINGECKO_IDS.get(sym_upper)
+    if preferred and preferred in ids:
+        return preferred
     sym_lower = symbol.lower()
     for cid in ids:
         if cid.lower() == sym_lower:
@@ -257,20 +315,19 @@ def main() -> int:
             source: str
 
             # Cache lookups so we only hit CoinGecko once per base symbol.
+            # Use static overrides first for symbols we know (avoids wrong CoinGecko matches).
             if base in supply_cache:
                 circ, total = supply_cache[base]
                 source = source_cache.get(base, "cache")
             else:
-                cg_circ, cg_total = _fetch_supply_from_coingecko(base, symbol_map)
-                circ, total = cg_circ, cg_total
-                source = "coingecko" if (cg_circ is not None or cg_total is not None) else "empty"
-
-                # Fallback to manual overrides if dynamic fetch failed.
-                if circ is None and total is None:
-                    override = SUPPLY_BY_BASE.get(base)
-                    if isinstance(override, tuple):
-                        circ, total = override
-                        source = "override"
+                override = SUPPLY_BY_BASE.get(base)
+                if isinstance(override, tuple):
+                    circ, total = override
+                    source = "override"
+                else:
+                    cg_circ, cg_total = _fetch_supply_from_coingecko(base, symbol_map)
+                    circ, total = cg_circ, cg_total
+                    source = "coingecko" if (cg_circ is not None or cg_total is not None) else "empty"
                 supply_cache[base] = (circ, total)
                 source_cache[base] = source
 
