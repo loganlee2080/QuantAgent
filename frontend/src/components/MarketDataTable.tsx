@@ -93,6 +93,8 @@ export interface MarketDataRow {
   maxLeverage: string;
   markPrice: string;
   pricePrecision?: string;
+  "fdv(USDT)"?: string;
+  "流通市值(USDT)"?: string;
   lastFundingRate: string;
   lastFundingTime: string;
   fundingTimesPerDay?: string;
@@ -454,6 +456,7 @@ export const MarketDataTable: React.FC = () => {
               <TableCell>Currency</TableCell>
               <TableCell align="right">Max lev</TableCell>
               <TableCell align="right">Mark price</TableCell>
+              <TableCell align="right">流通市值 / FDV (USDT)</TableCell>
               <TableCell align="right">Last funding rate</TableCell>
               <TableCell align="right">Fund times/day</TableCell>
               <TableCell align="right">
@@ -536,6 +539,16 @@ export const MarketDataTable: React.FC = () => {
                   <TableCell align="right">{r.maxLeverage || "-"}</TableCell>
                   <TableCell align="right">
                     {formatPriceWithPrecision(r.markPrice, r.pricePrecision)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {(() => {
+                      const circ = formatHumanUsdt(r["流通市值(USDT)"]);
+                      const fdv = formatHumanUsdt(r["fdv(USDT)"]);
+                      if (circ === "-" && fdv === "-") return "-";
+                      if (circ === "-") return fdv;
+                      if (fdv === "-") return circ;
+                      return `${circ} / ${fdv}`;
+                    })()}
                   </TableCell>
                   <TableCell
                     align="right"

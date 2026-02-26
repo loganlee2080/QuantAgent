@@ -95,6 +95,7 @@ ORDER_STATUS_AUDIT_PATH = DATA_BINANCE / "orders" / "order_status_audit.csv"
 CLAUDE_CONFIG_PATH = DATA_BINANCE / "orders" / "claude_config.json"
 MARKET_DATA_PATH = DATA_BINANCE / "market_data.csv"
 MARKET_DATA_LABELED_PATH = DATA_BINANCE / "backup" / "market_data_labeled.csv"
+MARKET_SUPPLY_PATH = DATA_BINANCE / "backup" / "market_supply.csv"
 FUNDING_FEE_HISTORY_PATH = DATA_BINANCE / "funding_fee_history.csv"
 
 # Claude API model IDs: Opus 4.6, Sonnet 4.5, Haiku 4.5 (https://platform.claude.com/docs/en/about-claude/models/overview).
@@ -425,7 +426,7 @@ MARKET_DATA_FIELDS = [
     "markPrice",
     "pricePrecision",
     "fdv(USDT)",
-    "maxCap(USDT)",
+    "流通市值(USDT)",
     "lastFundingRate",
     "lastFundingTime",
     "fundingTimesPerDay",
@@ -668,6 +669,38 @@ def _parse_leverage_brackets(bracket_list: list) -> dict:
     return out
 
 
+def _read_market_supply() -> dict:
+    """
+    Return currency_upper -> { "circulating_supply": float, "total_supply": float } from
+    data/binance/backup/market_supply.csv (currency,circulating_supply,total_supply).
+    Used to compute fdv(USDT) and 流通市值(USDT) in market_data refresh.
+    """
+    out: dict = {}
+    if not MARKET_SUPPLY_PATH.exists():
+        return out
+    try:
+        with open(MARKET_SUPPLY_PATH, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                cur = (row.get("currency") or "").strip().upper()
+                if not cur:
+                    continue
+                circ_s = (row.get("circulating_supply") or "").strip()
+                total_s = (row.get("total_supply") or "").strip()
+                try:
+                    circ = float(circ_s) if circ_s else None
+                except (TypeError, ValueError):
+                    circ = None
+                try:
+                    total = float(total_s) if total_s else None
+                except (TypeError, ValueError):
+                    total = None
+                if circ is not None or total is not None:
+                    out[cur] = {"circulating_supply": circ, "total_supply": total}
+    except Exception:
+        pass
+    return out
+
+
 def _fetch_and_write_market_data() -> None:
     """
     Fetch all Binance USD-M perpetual symbols and write market_data.csv.
@@ -800,6 +833,7 @@ def _fetch_and_write_market_data() -> None:
                         existing_by_currency[cur] = dict(row)
         except Exception:
             pass
+    supply_by_currency = _read_market_supply()
     # Build rows
     now_ts = int(time_module.time())
     rows: List[dict] = []
@@ -832,8 +866,7 @@ def _fetch_and_write_market_data() -> None:
         # Store full futures symbol (e.g. BTCUSDT) so frontend can display full pair;
         # callers can derive base coin by stripping trailing 'USDT' if needed.
         currency = sym
-        cur_upper = currency.upper().replace("USDT", "")
-        existing = existing_by_currency.get(cur_upper) or {}
+        existing = existing_by_currency.get(currency) or {}
         # todayFundRate = last funding rate * funding times per day (implied daily rate)
         today_fund_rate = ""
         if last_funding_rate:
@@ -858,15 +891,27 @@ def _fetch_and_write_market_data() -> None:
         spot_enabled = "true" if sym in spot_symbols else "false"
         if not spot_symbols and existing.get("spotEnabled"):
             spot_enabled = (existing.get("spotEnabled") or "").strip() or spot_enabled
-        fdv = (existing.get("fdv(USDT)") or "").strip()
-        max_cap = (existing.get("maxCap(USDT)") or "").strip()
+        fdv_str = (existing.get("fdv(USDT)") or "").strip()
+        circ_cap_str = (existing.get("流通市值(USDT)") or existing.get("maxCap(USDT)") or "").strip()
+        supply = supply_by_currency.get(currency)
+        if supply and mark_price_str:
+            try:
+                price_f = float(mark_price_str)
+                circ = supply.get("circulating_supply")
+                total = supply.get("total_supply")
+                if circ is not None and circ > 0:
+                    circ_cap_str = f"{(circ * price_f):.2f}"
+                if total is not None and total > 0:
+                    fdv_str = f"{(total * price_f):.2f}"
+            except (TypeError, ValueError):
+                pass
         rows.append({
             "currency": currency,
             "maxLeverage": leverage_by_sym.get(sym, ""),
             "markPrice": mark_price_str,
             "pricePrecision": price_precision_by_sym.get(sym, ""),
-            "fdv(USDT)": fdv,
-            "maxCap(USDT)": max_cap,
+            "fdv(USDT)": fdv_str,
+            "流通市值(USDT)": circ_cap_str,
             "lastFundingRate": last_funding_rate,
             "lastFundingTime": last_funding_time,
             "fundingTimesPerDay": funding_times_per_day,
@@ -1155,13 +1200,54 @@ def create_app() -> Flask:
     ) -> None:
         """Append a single suggestion record to ai_suggestions.jsonl."""
         AI_SUGGESTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        created_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
         record = {
+            "created_at": created_at,
             "user_message": user_message,
             "claude_reply": claude_reply,
             "orders_csv": orders_csv_block,
         }
-        with open(AI_SUGGESTIONS_PATH, "a") as f:
+        with open(AI_SUGGESTIONS_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _read_ai_suggestions(limit: int = 200) -> List[dict]:
+        """
+        Read up to the last `limit` suggestion records from ai_suggestions.jsonl.
+        Each record is normalized to include created_at (or None), user_message, claude_reply, orders_csv.
+        Returns records sorted by created_at descending when present; older/no-timestamp entries fall back to file order.
+        """
+        if not AI_SUGGESTIONS_PATH.exists():
+            return []
+        records: List[dict] = []
+        with open(AI_SUGGESTIONS_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                rec = {
+                    "created_at": raw.get("created_at"),
+                    "user_message": raw.get("user_message") or "",
+                    "claude_reply": raw.get("claude_reply") or "",
+                    "orders_csv": raw.get("orders_csv"),
+                }
+                records.append(rec)
+        if not records:
+            return []
+        # Keep last limit in file order (oldest→newest within the slice)
+        records = records[-limit:] if len(records) > limit else records
+        # Stable sort by created_at descending where present
+        def sort_key(r: dict) -> str:
+            ct = r.get("created_at")
+            return str(ct or "")
+
+        records.sort(key=sort_key, reverse=True)
+        return records
 
     def _read_last_ai_suggestion() -> Optional[dict]:
         """Return the last suggestion record from ai_suggestions.jsonl (or None)."""
@@ -1917,15 +2003,56 @@ def create_app() -> Flask:
         m = msg.strip().lower()
         return m in {"yes", "y", "ok", "okay", "sure", "confirm", "go ahead", "do it", "looks good", "sounds good"}
 
+    def _translate_to_english_for_confirm(text: str) -> str | None:
+        """Optional: translate short text to English via deep-translator (MyMemory). Returns None if unavailable or on error. Uses 2s timeout."""
+        if not text or len(text) > 50:
+            return None
+
+        def _do_translate() -> str | None:
+            try:
+                from deep_translator import MyMemoryTranslator
+                t = MyMemoryTranslator(source="auto", target="en")
+                out = t.translate(text)
+                return (out or "").strip() or None
+            except Exception:
+                return None
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                f = ex.submit(_do_translate)
+                return f.result(timeout=2)
+        except Exception:
+            return None
+
+    # Canonical English phrases for execute confirmation (used for exact match and after translation).
+    _EXECUTE_CONFIRM_EN = frozenset({
+        "execute", "yes", "y", "confirm", "go ahead", "do it",
+        "place orders", "place them", "place", "send", "submit", "ok", "okay",
+    })
+
     def _is_execute_confirmation(msg: str) -> bool:
-        """True if message is a clear confirmation to place orders (execute/yes/confirm). Includes Chinese."""
+        """True if message is a clear confirmation to place orders. Uses phrase set + optional translation."""
+        if not msg or not msg.strip():
+            return False
         m = msg.strip().lower()
-        return m in {
-            "execute", "yes", "y", "confirm", "go ahead", "do it",
-            "place orders", "place them", "place", "send", "submit",
-            # Chinese: 执行=execute, 确认=confirm, 好的=ok, 可以=can do/go ahead
-            "执行", "确认", "好的", "可以", "好", "下单", "提交",
-        }
+        # 1) Exact match: English + common multilingual phrases
+        if m in _EXECUTE_CONFIRM_EN:
+            return True
+        if m in {
+            "执行", "确认", "好的", "可以", "好", "下单", "提交",  # Chinese
+            "実行", "確認", "はい", "お願い", "頼む",  # Japanese
+            "실행", "확인", "예", "네", "진행",  # Korean
+            "ejecutar", "sí", "confirmar", "adelante", "envíar",  # Spanish
+            "exécuter", "oui", "confirmer", "envoyer",  # French
+            "ausführen", "ja", "bestätigen", "senden",  # German
+        }:
+            return True
+        # 2) Optional: translate short non-ASCII message to English and re-check (e.g. "run" in other languages)
+        if len(m) <= 25 and any(ord(c) > 127 for c in m):
+            _translated = _translate_to_english_for_confirm(m)
+            if _translated and _translated.strip().lower() in _EXECUTE_CONFIRM_EN:
+                return True
+        return False
 
     def _is_apply_last_suggestion_command(msg: str) -> bool:
         m = msg.strip().lower()
@@ -2198,9 +2325,29 @@ def create_app() -> Flask:
         """Return market data table (currency, maxLeverage, markPrice, funding, volume, etc.) with labels from backup file."""
         rows = _read_market_data()
         labels_by_currency = _read_market_data_labels()
+        supply_by_currency = _read_market_supply()
+        circ_cap_key = "流通市值(USDT)"
+        fdv_key = "fdv(USDT)"
         for row in rows:
             cur = (row.get("currency") or "").strip().upper()
             row["labels"] = labels_by_currency.get(cur, "")
+            # Fill FDV / 流通市值 from supply file when CSV has empty values (e.g. before next refresh)
+            supply = supply_by_currency.get(cur)
+            mark_price_str = (row.get("markPrice") or "").strip()
+            if supply and mark_price_str:
+                try:
+                    price_f = float(mark_price_str)
+                    circ = supply.get("circulating_supply")
+                    total = supply.get("total_supply")
+                    if not (row.get(fdv_key) or "").strip() and total is not None and total > 0:
+                        row[fdv_key] = f"{(total * price_f):.2f}"
+                    if not (row.get(circ_cap_key) or "").strip():
+                        if circ is not None and circ > 0:
+                            row[circ_cap_key] = f"{(circ * price_f):.2f}"
+                except (TypeError, ValueError):
+                    pass
+            if not (row.get(circ_cap_key) or "").strip() and (row.get("maxCap(USDT)") or "").strip():
+                row[circ_cap_key] = (row.get("maxCap(USDT)") or "").strip()
         return {"market_data": rows}, 200
 
     @app.patch("/api/market-data/labels")
@@ -3131,6 +3278,18 @@ def create_app() -> Flask:
         ctx = _get_session_context(session_id)
         return (ctx, 200)
 
+    @app.get("/api/chat/history")
+    def chat_history() -> tuple[dict, int]:
+        """Return recent AI suggestion records from ai_suggestions.jsonl for the Chat history UI."""
+        try:
+            limit_arg = request.args.get("limit", "200")
+            limit = int(limit_arg) if limit_arg.isdigit() else 200
+            limit = min(1000, max(1, limit))
+        except (TypeError, ValueError):
+            limit = 200
+        records = _read_ai_suggestions(limit=limit)
+        return ({"records": records}, 200)
+
     @app.post("/api/chat")
     def chat() -> tuple[dict, int]:
         data = request.get_json(silent=True) or {}
@@ -3493,6 +3652,95 @@ def create_app() -> Flask:
             f"[backend_server] Chat session storage: enabled at {_chat_sessions_dir}\n"
         )
 
+    # Startup: ensure market data labels file exists so market table can show categories.
+    if not MARKET_DATA_LABELED_PATH.exists():
+        try:
+            sys.stderr.write(
+                f"[backend_server] market data labels file missing at {MARKET_DATA_LABELED_PATH}. "
+                "Attempting to bootstrap via scripts/fill_market_data_labels.py\n"
+            )
+            script_path = ROOT / "scripts" / "fill_market_data_labels.py"
+            if script_path.is_file():
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, str(script_path)],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except Exception:
+                    sys.stderr.write(
+                        "[backend_server] market data labels bootstrap failed while running script.\n"
+                    )
+                    traceback.print_exc()
+                else:
+                    if proc.returncode != 0:
+                        sys.stderr.write(
+                            "[backend_server] market data labels bootstrap failed: "
+                            f"exit_code={proc.returncode}, stderr={proc.stderr[:500]!r}\n"
+                        )
+                    elif not MARKET_DATA_LABELED_PATH.exists():
+                        sys.stderr.write(
+                            "[backend_server] market data labels bootstrap script completed "
+                            "but labels file is still missing.\n"
+                        )
+                    else:
+                        sys.stderr.write(
+                            f"[backend_server] market data labels bootstrap: created {MARKET_DATA_LABELED_PATH}\n"
+                        )
+            else:
+                sys.stderr.write(
+                    f"[backend_server] market data labels bootstrap skipped: script not found at {script_path}\n"
+                )
+        except Exception:
+            # Never let labels bootstrap failure break app startup.
+            traceback.print_exc()
+
+    # Startup: ensure market supply file exists so FDV and 流通市值 can be computed on refresh.
+    if not MARKET_SUPPLY_PATH.exists():
+        try:
+            sys.stderr.write(
+                f"[backend_server] market supply file missing at {MARKET_SUPPLY_PATH}. "
+                "Attempting to bootstrap via scripts/fill_market_supply.py\n"
+            )
+            script_path = ROOT / "scripts" / "fill_market_supply.py"
+            if script_path.is_file():
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, str(script_path)],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except Exception:
+                    sys.stderr.write(
+                        "[backend_server] market supply bootstrap failed while running script.\n"
+                    )
+                    traceback.print_exc()
+                else:
+                    if proc.returncode != 0:
+                        sys.stderr.write(
+                            "[backend_server] market supply bootstrap failed: "
+                            f"exit_code={proc.returncode}, stderr={proc.stderr[:500]!r}\n"
+                        )
+                    elif not MARKET_SUPPLY_PATH.exists():
+                        sys.stderr.write(
+                            "[backend_server] market supply bootstrap script completed "
+                            "but supply file is still missing.\n"
+                        )
+                    else:
+                        sys.stderr.write(
+                            f"[backend_server] market supply bootstrap: created {MARKET_SUPPLY_PATH}\n"
+                        )
+            else:
+                sys.stderr.write(
+                    f"[backend_server] market supply bootstrap skipped: script not found at {script_path}\n"
+                )
+        except Exception:
+            traceback.print_exc()
+
     return app
 
 
@@ -3511,6 +3759,19 @@ def main() -> None:
             if (not MARKET_DATA_PATH.exists()) or MARKET_DATA_PATH.stat().st_size == 0:
                 sys.stderr.write("[backend_server] market_data.csv missing or empty on startup; running initial fetch in background...\n")
                 _fetch_and_write_market_data()
+            if not MARKET_SUPPLY_PATH.exists():
+                script_path = ROOT / "scripts" / "fill_market_supply.py"
+                if script_path.is_file() and MARKET_DATA_PATH.exists():
+                    try:
+                        subprocess.run(
+                            [sys.executable, str(script_path)],
+                            cwd=str(ROOT),
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                    except Exception:
+                        pass
         except Exception:
             traceback.print_exc()
 

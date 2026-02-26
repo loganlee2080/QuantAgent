@@ -18,6 +18,7 @@ import { OrderHistoryTable } from "./components/OrderHistoryTable";
 import { MarketDataTable } from "./components/MarketDataTable";
 import { AssistantSidebar } from "./assistant-ui/AssistantSidebar";
 import { TradeIntentContext } from "./assistant-ui/TradeIntentContext";
+import { HistoryDialog } from "./components/HistoryDialog";
 
 interface SummaryData {
   totalWalletBalance?: string;
@@ -51,6 +52,10 @@ const App: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(true);
   const [pendingTradeCurrencies, setPendingTradeCurrencies] = useState<string[] | null>(null);
   const [pendingChatText, setPendingChatText] = useState<string | null>(null);
+  const [historyMode, setHistoryMode] = useState<"orders" | "chat" | null>(null);
+
+  const handleOpenHistory = useCallback((mode: "orders" | "chat") => setHistoryMode(mode), []);
+  const handleCloseHistory = useCallback(() => setHistoryMode(null), []);
 
   const openChatWithTrade = useCallback((currencies: string[]) => {
     const list = currencies.filter(Boolean);
@@ -267,6 +272,7 @@ const App: React.FC = () => {
             open={chatOpen}
             onOpenChange={setChatOpen}
             defaultWidthPercent={32}
+            onOpenHistory={handleOpenHistory}
           >
           <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
             {/* Scrollable content (tables) */}
@@ -354,6 +360,11 @@ const App: React.FC = () => {
           </Box>
         </AssistantSidebar>
       </Box>
+      <HistoryDialog
+        open={historyMode !== null}
+        mode={historyMode ?? "orders"}
+        onClose={handleCloseHistory}
+      />
       {/* PNL (%) over time panel – reuse funding-history style SVG renderer */}
       <Dialog open={isPnlChartOpen} onClose={handleClosePnlChart} maxWidth="md" fullWidth>
         <DialogTitle>PNL (%) over time</DialogTitle>

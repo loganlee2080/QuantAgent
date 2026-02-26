@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { Box, IconButton } from "@mui/material";
+import { Box, IconButton, Menu, MenuItem } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import ChatIcon from "@mui/icons-material/Chat";
+import SettingsIcon from "@mui/icons-material/Settings";
 import { Thread } from "./Thread";
 
 interface AssistantSidebarProps {
@@ -15,6 +16,8 @@ interface AssistantSidebarProps {
   /** Uncontrolled: initial open state when open/onOpenChange not provided. */
   defaultOpen?: boolean;
   defaultWidthPercent?: number;
+  /** Called when user chooses Order history or Chat history from the settings menu. */
+  onOpenHistory?: (mode: "orders" | "chat") => void;
 }
 
 export function AssistantSidebar({
@@ -23,6 +26,7 @@ export function AssistantSidebar({
   onOpenChange,
   defaultOpen = true,
   defaultWidthPercent = 32,
+  onOpenHistory,
 }: AssistantSidebarProps) {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const isControlled = controlledOpen !== undefined && onOpenChange !== undefined;
@@ -30,6 +34,7 @@ export function AssistantSidebar({
   const setOpen = isControlled ? onOpenChange! : setInternalOpen;
 
   const [widthPct, setWidthPct] = useState(defaultWidthPercent);
+  const [settingsAnchor, setSettingsAnchor] = useState<null | HTMLElement>(null);
 
   const clampedWidth = Math.min(50, Math.max(22, widthPct));
 
@@ -116,8 +121,23 @@ export function AssistantSidebar({
             top: 8,
             right: 8,
             zIndex: 1300,
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
           }}
         >
+          <IconButton
+            color="primary"
+            onClick={(e) => setSettingsAnchor(e.currentTarget)}
+            aria-label="Open system history"
+            sx={{
+              bgcolor: "background.paper",
+              boxShadow: 2,
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <SettingsIcon />
+          </IconButton>
           <IconButton
             color="primary"
             onClick={() => setOpen(true)}
@@ -130,6 +150,32 @@ export function AssistantSidebar({
           >
             <ChatIcon />
           </IconButton>
+          <Menu
+            anchorEl={settingsAnchor}
+            open={Boolean(settingsAnchor)}
+            onClose={() => setSettingsAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+          >
+            <MenuItem
+              onClick={() => {
+                setSettingsAnchor(null);
+                onOpenHistory?.("orders");
+              }}
+              aria-label="Open order history"
+            >
+              Order history
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setSettingsAnchor(null);
+                onOpenHistory?.("chat");
+              }}
+              aria-label="Open chat history"
+            >
+              Chat history
+            </MenuItem>
+          </Menu>
         </Box>
       )}
     </Box>

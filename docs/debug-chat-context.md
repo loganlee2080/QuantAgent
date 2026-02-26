@@ -85,3 +85,12 @@ Then run the backend (e.g. `python scripts/backend_server.py`). For each chat re
 2. In backend logs, confirm `chat context: ... has_history=... message_count=...` for the request that failed.
 3. If needed, run with `DEBUG_CLAUDE_PROMPT=1` and inspect whether "Conversation history" is in the prompt.
 4. Ensure the same `session_id` is sent from the client for the whole thread and that the server can persist `data/binance/chat_sessions/`.
+
+## Optional: Smarter execute-confirmation detection (i18n)
+
+The backend treats short messages like "Execute", "Yes", "执行", "确认" as confirmation to place pending orders. Detection uses:
+
+1. **Static phrase set** — English, Chinese, Japanese, Korean, Spanish, French, German (no extra dependency).
+2. **Optional translation** — If `deep-translator` is installed (`pip install deep-translator`), short messages in other languages (e.g. "run", "confirm" in Thai or Russian) are translated to English via MyMemory (free, no API key) and matched. Uses a 2s timeout so the request is not blocked.
+
+Without `deep-translator`, only the static set is used. To support more languages without adding a dependency, extend the phrase set in `_is_execute_confirmation` in `backend_server.py`.

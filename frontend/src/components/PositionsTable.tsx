@@ -105,6 +105,18 @@ function formatFundingRatePercent(value: string | null | undefined): string {
   return `${(n * 100).toFixed(4)}%`;
 }
 
+function formatHumanUsdt(value: string | null | undefined): string {
+  if (value == null || value === "") return "-";
+  const n = Number(value);
+  if (Number.isNaN(n)) return "-";
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return n.toFixed(2);
+}
+
 function openBinanceFutures(coin: string | null | undefined) {
   if (!coin) return;
   const base = coin.toUpperCase();
@@ -222,6 +234,7 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
   const [labelFilter, setLabelFilter] = useState<string>("");
   const [labelsByCurrency, setLabelsByCurrency] = useState<Record<string, string>>({});
   const [pricePrecisionByCurrency, setPricePrecisionByCurrency] = useState<Record<string, number>>({});
+  const [capByCurrency, setCapByCurrency] = useState<Record<string, string>>({});
   const [selectedCoins, setSelectedCoins] = useState<Set<string>>(new Set());
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [orderPlaceDialogOpen, setOrderPlaceDialogOpen] = useState(false);
@@ -239,6 +252,7 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
         const rows = json.market_data ?? [];
         const byCurrency: Record<string, string> = {};
         const precByCurrency: Record<string, number> = {};
+        const capByCurrency: Record<string, string> = {};
         for (const row of rows) {
           const curRaw = String(row.currency || row.symbol || "").trim().toUpperCase();
           if (!curRaw) continue;
@@ -250,9 +264,23 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
           if (!Number.isNaN(precNum) && precNum >= 0 && precNum <= 12) {
             precByCurrency[base] = precNum;
           }
+          const fdvStr = String((row["fdv(USDT)"] ?? "")).trim();
+          const circStr = String((row["流通市值(USDT)"] ?? "")).trim();
+          const fdvText = formatHumanUsdt(fdvStr || undefined);
+          const circText = formatHumanUsdt(circStr || undefined);
+          let combined = "";
+          if (!(circText === "-" && fdvText === "-")) {
+            if (circText === "-") combined = fdvText;
+            else if (fdvText === "-") combined = circText;
+            else combined = `${circText} / ${fdvText}`;
+          }
+          if (combined) {
+            capByCurrency[base] = combined;
+          }
         }
         setLabelsByCurrency(byCurrency);
         setPricePrecisionByCurrency(precByCurrency);
+        setCapByCurrency(capByCurrency);
       } catch {
         setLabelsByCurrency({});
         setPricePrecisionByCurrency({});
@@ -575,6 +603,7 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
                   />
                 </Tooltip>
               </TableCell>
+              <TableCell align="right">流通市值 / FDV (USDT)</TableCell>
               <TableCell align="right">
                 <span
                   style={{ cursor: "pointer" }}
@@ -758,6 +787,13 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({ positions, onRef
                       const n = Number(p.positionValue);
                       if (Number.isNaN(n)) return "-";
                       return n.toFixed(2);
+                    })()}
+                  </TableCell>
+                  <TableCell align="right">
+                    {(() => {
+                      const base = (p.coin || "").toUpperCase().replace(/USDT$/, "");
+                      const v = (capByCurrency[base] || "").trim();
+                      return v || "-";
                     })()}
                   </TableCell>
                   <TableCell align="right">
